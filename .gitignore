@@ -1,0 +1,14 @@
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Redundant large CSV copy
+data/processed/final_dataset.csv
+
+# Future model checkpoints
+*.pt
+*.pth
+
+# Logs
+*.log
