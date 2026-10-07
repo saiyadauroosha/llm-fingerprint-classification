@@ -1,0 +1,11 @@
+# Core: training and evaluating the CNN and RNN/LSTM models
+torch>=2.2
+numpy>=1.26
+pandas>=2.1
+pyarrow>=14.0          # parquet engine for data/splits/*.parquet
+scikit-learn>=1.4
+matplotlib>=3.8        # learning curves and confusion matrix plots (src/cnn/train.py)
+
+# Dataset preparation notebook (notebooks/01_dataset_inspection.ipynb)
+datasets>=2.18         # downloads LMArena Arena Human Preference 140K
+jupyter>=1.0
