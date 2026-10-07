@@ -19,7 +19,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
 
-####### 1. Load the fixed train, validation, and test splits #######
+##### 1. Load the fixed train, validation, and test splits #####
 
 
 train = pd.read_parquet("data/splits/train.parquet")
@@ -34,14 +34,14 @@ label2id = {
 }
 
 
-####### 2. Tokenizer ########
+##### 2. Tokenizer ######
 # breaks each response into smaller tokens, like words, newlines, and punctuation
 
 def tokenize(text):
     return re.findall(r"\w+|\n|[^\w\s]", str(text))
 
 
-####### 3. Function to build vocabulary from training data ######
+##### 3. Function to build vocabulary from training data ####
 
 ## vocab is built from the training data only and do not use validation or test data to create the vocab
 
@@ -71,7 +71,7 @@ def build_vocab(texts):
     return vocab
 
 
-####### 4. Convert text to numbers #######
+##### 4. Convert text to numbers #####
 # The LSTM needs numbers instead of text, so each token is replaced by its num from the vocab
 # we also made the inputs the same length; longer inputs are cut off at 512 tokens
 # shorter texts are filled with <pad> tokens
@@ -99,7 +99,7 @@ def encode(text, vocab):
     return ids
 
 
-####### 5. Dataset #######
+##### 5. Dataset #####
 # prepares the texts and labels so pyTorch can load them in batches during training and testing
 
 class TextDataset(Dataset):
@@ -131,7 +131,7 @@ class TextDataset(Dataset):
         )
 
 
-####### 6. LSTM model ######
+##### 6. LSTM model ####
 
 # Reads the sequence of tokens and learns to predict which LLM generated the response
 
@@ -190,7 +190,7 @@ class TextLSTM(nn.Module):
         )
 
 
-####### RQ2 Inputs ########
+#### RQ2 Inputs #####
 
 # Prompt only
 train["input_prompt"] = train["prompt"]
@@ -218,7 +218,7 @@ test["input_both"] = (
 )
 
 
-###### Train and evaluate the model
+#### Train and evaluate the model
 
 def run_experiment(train, val, test, column):
 
