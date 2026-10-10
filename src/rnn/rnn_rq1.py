@@ -8,6 +8,17 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+import copy 
+import random
+import numpy as np 
+from torch.nn.utils.rnn import pack_padded_sequence 
+from sklearn.metrics import precision_score, recall_score
+
+random. seed (42)
+np.random.seed(42)
+torch.manual_seed (42)
+
+
 
 
 # 1. Load the fixed train/validation/test splits
@@ -159,7 +170,8 @@ class TextLSTM(nn.Module):
         )
 
     def forward(self, x):
-
+        #Find each response's real length so padding doesn't affect final state
+        lengths = (x != 0). sum(dim=1).clamp(min=1).cpu()
         # x: (batch size, sequence length, embedding dimension)
         embedded = self.embedding(x)
 
@@ -168,7 +180,15 @@ class TextLSTM(nn.Module):
         #-output: hidden states for every token
         #-hidden: final hidden state
         #-cell: final cell state
-        output, (hidden, cell) = self.lstm(embedded)
+
+        # NEW: Pack padded sequence so the LSTM stops at the actual text end
+        packed = pack_padded_sequence (
+            embedded, 
+            lengths, 
+            batch_first=True, 
+            enforce_sorted=False
+        )
+        output, (hidden, cell) = self.lstm(packed)
 
         # Use the final hidden state
         final_hidden = hidden[-1]
@@ -280,7 +300,7 @@ for epoch in range(EPOCHS):
     # Save the best model based on validation accuracy
     if val_accuracy > best_val_accuracy:
         best_val_accuracy = val_accuracy
-        best_model_state = model.state_dict()
+        best_model_state = copy.deepcopy(model.state_dict())
 
 
 # 8. Load the best model
@@ -322,6 +342,23 @@ test_accuracy = accuracy_score(
     test_predictions
 )
 
+# Macro Precision 
+test_macro_precision = precision_score(
+    test_labels, 
+    test_predictions, 
+    average="macro", 
+    zero_division=0
+)
+
+#Macro Recall
+test_macro_recall = recall_score(
+    test_labels, 
+    test_predictions,
+    average="macro", 
+    zero_division=0
+)
+
+
 
 # Macro F1
 
@@ -343,6 +380,11 @@ cm = confusion_matrix(
 print("\n===== RQ1 TEST RESULTS =====")
 
 print("Test Accuracy:", test_accuracy)
+
+
+print("Test Macro Precision:", test_macro_precision) 
+
+print("Test Macro Recall:", test_macro_recall)
 
 print("Test Macro F1:", test_macro_f1)
 
