@@ -1,8 +1,13 @@
-"""RQ2: Does adding the prompt help a CNN identify the LLM family?
+"""RQ2: Does the prompt help a CNN identify the LLM family?
+
+Compares three inputs, using the same format as the RNN team (src/rnn/rnn_rq2.py):
+    prompt           -> first 128 prompt tokens
+    response         -> first 512 response tokens
+    prompt_response  -> first 128 prompt tokens + <sep> + first 512 response tokens
 
 Self-contained: imports only installed libraries, never other project Python files.
 Run from the repository root:
-    python src/cnn/rq2_cnn.py
+    python src/cnn/cnn_rq2.py
 
 Optional: --data-dir PATH --output-dir NEW_PATH --epochs 10 --device cpu
 Edit the settings below to change embedding size, filters or input lengths.
@@ -30,8 +35,9 @@ from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classifi
 
 # 1. Settings — edit these values to change the experiment.
 # These match the basic setup of your LSTM example where applicable.
-MAX_LEN = 512                 # Response token budget in every experiment
-PROMPT_LEN = 128              # Additional prompt budget for RQ2
+MAX_LEN = 512                 # Response token budget (response, prompt_response)
+PROMPT_LEN = 128              # Prompt token budget (prompt, prompt_response)
+MODES = ("prompt", "response", "prompt_response")
 EMB_DIM = 200
 NUM_FILTERS = 100             # Number of filters for EACH kernel size
 KERNEL_SIZES = (3, 4, 5)
@@ -89,9 +95,10 @@ def tokenize(text):
 
 
 def build_vocab(train, mode="response"):
-    counts = Counter(token for text in train.response for token in tokenize(text))
-    if mode == "prompt_response":
-        counts.update(token for text in train.prompt for token in tokenize(text))
+    # Count only the tokens the model actually sees for this input mode,
+    # matching the RNN team's per-input vocabulary.
+    counts = Counter(token for row in train.to_dict("records")
+                     for token in text_tokens(row, mode) if token != "<sep>")
     vocab = {"<pad>": 0, "<unk>": 1, "<sep>": 2}
     for token, count in counts.items():
         if count >= MIN_FREQUENCY and token not in vocab:
@@ -101,22 +108,30 @@ def build_vocab(train, mode="response"):
 
 # 4. Convert one example into token IDs and record its true length.
 def text_tokens(row, mode="response"):
-    response = tokenize(row["response"])[:MAX_LEN]
+    if mode == "prompt":
+        return tokenize(row["prompt"])[:PROMPT_LEN]
     if mode == "response":
-        return response
+        return tokenize(row["response"])[:MAX_LEN]
     if mode == "prompt_response":
-        # Adding the prompt never reduces the number of retained response tokens.
-        return tokenize(row["prompt"])[:PROMPT_LEN] + ["<sep>"] + response
+        # <sep> marks "prompt ends here, response starts here". Adding the
+        # prompt never reduces the number of retained response tokens.
+        return (tokenize(row["prompt"])[:PROMPT_LEN] + ["<sep>"]
+                + tokenize(row["response"])[:MAX_LEN])
     raise ValueError(f"Unknown input mode: {mode}")
+
+
+def input_width(mode):
+    # 128 for prompt, 512 for response, 128 + 1 + 512 = 641 for prompt_response.
+    width = {"prompt": PROMPT_LEN, "response": MAX_LEN,
+             "prompt_response": PROMPT_LEN + 1 + MAX_LEN}[mode]
+    return max(width, max(KERNEL_SIZES))
 
 
 def encode(row, vocab, mode="response"):
     tokens = text_tokens(row, mode)
     ids = [vocab.get(token, 1) for token in tokens] or [1]
     length = len(ids)
-    width = MAX_LEN if mode == "response" else PROMPT_LEN + 1 + MAX_LEN
-    width = max(width, max(KERNEL_SIZES))
-    ids += [0] * (width - length)
+    ids += [0] * (input_width(mode) - length)
     return ids, length
 
 
@@ -249,7 +264,8 @@ def train_cnn(train, val, mode, device, epochs):
     model.load_state_dict(best_state)
     model.eval()
     checkpoint = {"model_state": best_state, "model_args": model_args, "vocab": vocab,
-                  "label2id": label2id, "mode": mode, "max_len": MAX_LEN,
+                  "label2id": label2id, "mode": mode, "input_width": input_width(mode),
+                  "max_len": MAX_LEN,
                   "prompt_len": PROMPT_LEN, "best_epoch": best_epoch,
                   "selection_metric": "validation_accuracy", "best_val_accuracy": best_accuracy,
                   "seed": SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
@@ -311,30 +327,34 @@ def setup(question, argv=None, extra_arguments=None):
     return args, torch.device(device), output
 
 
-# 10. RQ2: compare response-only with prompt + response.
+# 10. RQ2: compare prompt only, response only, and prompt + response.
 def main(argv=None):
     args, device, output = setup("rq2", argv)
     train, val, test = load_data(args.data_dir)
     comparison = []
-    for mode in ("response", "prompt_response"):
+    for mode in MODES:
         print(f"\n===== TRAINING: {mode} =====")
         # Reset the same seed and use the same split files, response budget,
-        # embedding size, filters, optimizer, and epoch count for both models.
+        # embedding size, filters, optimizer, and epoch count for every model.
         model, vocab, checkpoint, history = train_cnn(train, val, mode, device, args.epochs)
         folder = output / mode
         save_model(folder, checkpoint, history)
         scores = test_and_save(model, test, vocab, mode, device, folder)
-        comparison.append({"input": mode, "best_epoch": checkpoint["best_epoch"],
+        comparison.append({"input": mode, "input_tokens": input_width(mode),
+                           "best_epoch": checkpoint["best_epoch"],
                            "vocab_size": len(vocab), **scores})
         del model
 
     table = pd.DataFrame(comparison)
     table.to_csv(output / "rq2_comparison.csv", index=False)
     print("\n===== RQ2 COMPARISON =====\n", table.to_string(index=False))
-    accuracy_change = comparison[1]["accuracy"] - comparison[0]["accuracy"]
-    f1_change = comparison[1]["macro_f1"] - comparison[0]["macro_f1"]
-    print(f"Adding the prompt changed test accuracy by {100 * accuracy_change:+.2f} percentage points.")
-    print(f"Change in macro F1: {f1_change:+.4f}")
+    results = {row["input"]: row for row in comparison}
+    for label, first, second in (("Prompt only vs response only", "response", "prompt"),
+                                 ("Adding the prompt to the response", "response", "prompt_response")):
+        accuracy_change = results[second]["accuracy"] - results[first]["accuracy"]
+        f1_change = results[second]["macro_f1"] - results[first]["macro_f1"]
+        print(f"{label}: accuracy {100 * accuracy_change:+.2f} percentage points, "
+              f"macro F1 {f1_change:+.4f}")
     print("This is a single-seed comparison. Repeat predefined seeds before claiming a reliable improvement.")
     print("Prompt inclusion also changes the vocabulary; vocabulary sizes are reported above.")
     return table
