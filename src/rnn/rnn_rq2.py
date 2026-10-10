@@ -16,8 +16,17 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, precision_score, recall_score
 
+
+import random
+import numpy as np 
+from torch.nn.utils.rnn import pack_padded_sequence
+
+# Set random seeds for reproducibility
+random.seed (42)
+np.random.seed(42)
+torch.manual_seed(42)
 
 ##### 1. Load the fixed train, validation, and test splits #####
 
@@ -38,7 +47,7 @@ label2id = {
 # breaks each response into smaller tokens, like words, newlines, and punctuation
 
 def tokenize(text):
-    return re.findall(r"\w+|\n|[^\w\s]", str(text))
+    return re.findall(r"<sep>|\w+|\n|[^\w\s]", str(text), flags=re. IGNORECASE)
 
 
 ##### 3. Function to build vocabulary from training data ####
@@ -78,7 +87,8 @@ def build_vocab(texts):
 
 MAX_LEN = 512
 
-def encode(text, vocab):
+def encode(text, vocab, max_len=MAX_LEN):
+# Added max_len parameter so different inputs can have their own length limits
 
     tokens = tokenize(text)
 
@@ -90,11 +100,9 @@ def encode(text, vocab):
         for token in tokens
     ]
 
-    # keep at most 512 tokens
-    ids = ids[:MAX_LEN]
+    ids = ids[:max_len]
 
-    # add padding until the input is exactly 512 tokens long
-    ids += [0] * (MAX_LEN - len(ids))
+    ids += [0] * (max_len - len(ids))
 
     return ids
 
@@ -104,12 +112,12 @@ def encode(text, vocab):
 
 class TextDataset(Dataset):
 
-    def __init__(self, df, column, vocab):
+    def __init__(self, df, column, vocab, max_len):
 
         # convert the text into numbers using the vocab
 
         self.x = [
-            encode(text, vocab)
+            encode(text, vocab, max_len)
             for text in df[column]
         ]
 
@@ -173,18 +181,32 @@ class TextLSTM(nn.Module):
             n_classes
         )
 
-    def forward(self, x):
 
-        # convert token IDs into embeddings
+    def forward(self, x):
+        #Find each response's real length so padding doesn't affect final state
+        lengths = (x != 0). sum(dim=1).clamp(min=1).cpu()
+        # x: (batch size, sequence length, embedding dimension)
         embedded = self.embedding(x)
 
-        # pass the embeddings through the LSTM
-        output, (hidden, cell) = self.lstm(embedded)
+        # LSTM processes the sequence
+        #This produces 
+        #-output: hidden states for every token
+        #-hidden: final hidden state
+        #-cell: final cell state
 
-        # use the final hidden state for classification
+        # NEW: Pack padded sequence so the LSTM stops at the actual text end
+        packed = pack_padded_sequence (
+            embedded, 
+            lengths, 
+            batch_first=True, 
+            enforce_sorted=False
+        )
+        output, (hidden, cell) = self.lstm(packed)
+
+        # Use the final hidden state
         final_hidden = hidden[-1]
 
-        # use that summary to predict the LLM family
+        # Predict the LLM family
         return self.fc(
             self.dropout(final_hidden)
         )
@@ -192,31 +214,25 @@ class TextLSTM(nn.Module):
 
 #### RQ2 Inputs #####
 
-# Prompt only
-train["input_prompt"] = train["prompt"]
-val["input_prompt"] = val["prompt"]
-test["input_prompt"] = test["prompt"]
+# NEW: Prompt only limited to 128 tokens
+train["input_prompt"] = train["prompt"].apply(lambda text: " ".join(tokenize(text)[:128]))
+val["input_prompt"] = val["prompt"].apply(lambda text: " ".join(tokenize(text)[:128]))
+test["input_prompt"] = test["prompt"].apply(lambda text: " ".join(tokenize(text)[:128]))
 
-
-# Response only
+# Response only: response input limited to 512 tokens
 train["input_response"] = train["response"]
 val["input_response"] = val["response"]
 test["input_response"] = test["response"]
 
+# NEW: Prompt (128 tokens) + explicit separator (<sep>) + response (512 tokens)
+def combine_prompt_response(prompt, response):
+    prompt_tokens = tokenize(prompt)[:128]
+    response_tokens = tokenize(response)[:512]
+    return " ".join(prompt_tokens) + " <sep> " + " ".join(response_tokens)
 
-# Prompt + response
-train["input_both"] = (
-    train["prompt"] + " " + train["response"]
-)
-
-val["input_both"] = (
-    val["prompt"] + " " + val["response"]
-)
-
-test["input_both"] = (
-    test["prompt"] + " " + test["response"]
-)
-
+train["input_both"] = [combine_prompt_response(p, r) for p, r in zip(train["prompt"], train["response"])]
+val["input_both"] = [combine_prompt_response(p, r) for p, r in zip(val["prompt"], val["response"])]
+test["input_both"] = [combine_prompt_response(p, r) for p, r in zip(test["prompt"], test["response"])]
 
 #### Train and evaluate the model
 
@@ -228,9 +244,12 @@ def run_experiment(train, val, test, column):
     # Create datasets
 
     # convert the selected text into token IDs and convert the LLM names into numeric labels
-    train_ds = TextDataset(train, column, vocab)
-    val_ds = TextDataset(val, column, vocab)
-    test_ds = TextDataset(test, column, vocab)
+    max_len = {"input_prompt": 128, "input_response": 512, "input_both": 641}[column]
+    train_ds = TextDataset(train, column, vocab, max_len)
+    val_ds = TextDataset(val, column, vocab, max_len)
+    test_ds = TextDataset(test, column, vocab, max_len)
+
+
 
     # Create loaders
     # Loaders are used to load the data in batches during training and evaluation
@@ -357,6 +376,23 @@ def run_experiment(train, val, test, column):
         test_predictions
     )
 
+    # Macro Precision 
+    macro_precision = precision_score(
+        test_labels, 
+        test_predictions, 
+        average="macro", 
+        zero_division=0
+    )
+
+    #Macro Recall
+    macro_recall = recall_score(
+        test_labels, 
+        test_predictions,
+        average="macro", 
+        zero_division=0
+    )
+
+
     macro_f1 = f1_score(
         test_labels,
         test_predictions,
@@ -372,6 +408,8 @@ def run_experiment(train, val, test, column):
 
     print("\n", column)
     print("Accuracy:", accuracy)
+    print("Macro Precision:", macro_precision) 
+    print("Macro Recall:", macro_recall)
     print("Macro F1:", macro_f1)
     print("Confusion Matrix:")
     print(cm)
