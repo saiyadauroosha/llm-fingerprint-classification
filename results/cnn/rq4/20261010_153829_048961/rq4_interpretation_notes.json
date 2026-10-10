@@ -1,0 +1,13 @@
+{
+  "style_data": "Full training responses; descriptive means, not CNN feature importance.",
+  "pattern_data": "Correctly classified validation responses, truncated to MAX_LEN.",
+  "correct_validation_examples_analyzed": {
+    "GPT": 294,
+    "Claude": 301,
+    "Gemini": 261
+  },
+  "pattern_score": "Positive pooled-feature contributions to true-class logit minus mean other-class logits; bias excluded.",
+  "ranking": "Total positive contribution, restricted to patterns meeting minimum example count.",
+  "minimum_example_count": 2,
+  "limitations": "Associations in this dataset and model. They may reflect topic, length or model version, not universal authorship rules. Counts are restricted to correctly classified validation examples."
+}

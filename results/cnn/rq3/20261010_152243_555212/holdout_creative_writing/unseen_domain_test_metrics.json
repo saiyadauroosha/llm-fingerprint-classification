@@ -1,0 +1,38 @@
+{
+  "accuracy": 0.8344370860927153,
+  "macro_f1": 0.838379171428803,
+  "n_examples": 151,
+  "classification_report": {
+    "GPT": {
+      "precision": 0.8780487804878049,
+      "recall": 0.8780487804878049,
+      "f1-score": 0.8780487804878049,
+      "support": 41.0
+    },
+    "Claude": {
+      "precision": 0.75,
+      "recall": 0.9130434782608695,
+      "f1-score": 0.8235294117647058,
+      "support": 46.0
+    },
+    "Gemini": {
+      "precision": 0.8888888888888888,
+      "recall": 0.75,
+      "f1-score": 0.8135593220338984,
+      "support": 64.0
+    },
+    "accuracy": 0.8344370860927153,
+    "macro avg": {
+      "precision": 0.8389792231255645,
+      "recall": 0.8470307529162248,
+      "f1-score": 0.838379171428803,
+      "support": 151.0
+    },
+    "weighted avg": {
+      "precision": 0.843635025754231,
+      "recall": 0.8344370860927153,
+      "f1-score": 0.8341069506711652,
+      "support": 151.0
+    }
+  }
+}

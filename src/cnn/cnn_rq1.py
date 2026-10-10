@@ -5,6 +5,8 @@ import re
 import copy
 
 from collections import Counter
+
+from pathlib import Path
  
 import pandas as pd
 
@@ -19,13 +21,18 @@ from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
  
 # 1. Load the fixed train/validation/test splits
 
-# Run this script from your project folder.
- 
-train = pd.read_parquet("data/splits/train.parquet")
+# Paths are resolved relative to this file, so the script runs
+# from the project root or from src/cnn.
 
-val = pd.read_parquet("data/splits/validation.parquet")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-test = pd.read_parquet("data/splits/test.parquet")
+DATA_DIR = PROJECT_ROOT / "data" / "splits"
+
+train = pd.read_parquet(DATA_DIR / "train.parquet")
+
+val = pd.read_parquet(DATA_DIR / "validation.parquet")
+
+test = pd.read_parquet(DATA_DIR / "test.parquet")
  
 torch.manual_seed(42)
  
