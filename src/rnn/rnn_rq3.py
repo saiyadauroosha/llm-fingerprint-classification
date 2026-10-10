@@ -19,8 +19,17 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, precision_score, recall_score
 
+
+import random
+import numpy as np 
+from torch.nn.utils.rnn import pack_padded_sequence
+
+# Set random seeds for reproducibility
+random.seed (42)
+np.random.seed(42)
+torch.manual_seed(42)
 
 #### 1. load the data ####
 
@@ -161,17 +170,34 @@ class TextLSTM(nn.Module):
         )
 
     def forward(self, x):
-
+        #Find each response's real length so padding doesn't affect final state
+        lengths = (x != 0). sum(dim=1).clamp(min=1).cpu()
+        # x: (batch size, sequence length, embedding dimension)
         embedded = self.embedding(x)
 
-        output, (hidden, cell) = self.lstm(embedded)
+        # LSTM processes the sequence
+        #This produces 
+        #-output: hidden states for every token
+        #-hidden: final hidden state
+        #-cell: final cell state
 
-        # use the final hidden state for classification
+        # NEW: Pack padded sequence so the LSTM stops at the actual text end
+        packed = pack_padded_sequence (
+            embedded, 
+            lengths, 
+            batch_first=True, 
+            enforce_sorted=False
+        )
+        output, (hidden, cell) = self.lstm(packed)
+
+        # Use the final hidden state
         final_hidden = hidden[-1]
 
+        # Predict the LLM family
         return self.fc(
             self.dropout(final_hidden)
         )
+
 
 
 #### run one held-out-domain experiment ####
@@ -196,6 +222,9 @@ def run_experiment(train, val, test, held_out_domain):
     test_data = test[
         test["domain"] == held_out_domain
     ].copy()
+    
+    seen_test_data = test[test["domain"] != held_out_domain].copy()
+
 
     ## build vocabulary from training data only ##
 
@@ -220,6 +249,8 @@ def run_experiment(train, val, test, held_out_domain):
         vocab
     )
 
+    seen_test_ds = TextDataset(seen_test_data, vocab)
+
     ### create data loaders
 
     train_dl = DataLoader(
@@ -237,6 +268,7 @@ def run_experiment(train, val, test, held_out_domain):
         test_ds,
         batch_size=64
     )
+    seen_test_dl = DataLoader(seen_test_ds, batch_size=64)
 
     # create model, optimizer, and loss function
 
@@ -314,67 +346,44 @@ def run_experiment(train, val, test, held_out_domain):
                 model.state_dict()
             )
 
-    # test using the best model
-
-    model.load_state_dict(
-        best_model
-    )
-
+# NEW: Helper functions to evaluate loaders and print full metrics for both splits
+    model.load_state_dict(best_model)
     model.eval()
 
-    test_predictions = []
-    test_labels = []
+    def evaluate(loader):
+        predictions_all = []
+        labels_all = []
+        with torch.no_grad():
+            for x, y in loader:
+                predictions = model(x)
+                predicted = predictions.argmax(dim=1)
+                predictions_all.extend(predicted.tolist())
+                labels_all.extend(y.tolist())
+        return labels_all, predictions_all
 
-    with torch.no_grad():
+    test_labels, test_predictions = evaluate(test_dl)
+    seen_labels, seen_predictions = evaluate(seen_test_dl)
 
-        for x, y in test_dl:
-
-            predictions = model(x)
-
-            predicted = predictions.argmax(
-                dim=1
-            )
-
-            test_predictions.extend(
-                predicted.tolist()
-            )
-
-            test_labels.extend(
-                y.tolist()
-            )
-
-    # calculate the final test accuracy, macro F1, and confusion matrix
-
-    accuracy = accuracy_score(
-        test_labels,
-        test_predictions
-    )
-
-    macro_f1 = f1_score(
-        test_labels,
-        test_predictions,
-        average="macro"
-    )
-
-    cm = confusion_matrix(
-        test_labels,
-        test_predictions
-    )
-
-    # print results
+    def print_metrics(title, labels, predictions):
+        accuracy = accuracy_score(labels, predictions)
+        macro_precision = precision_score(labels, predictions, average="macro", zero_division=0)
+        macro_recall = recall_score(labels, predictions, average="macro", zero_division=0)
+        macro_f1 = f1_score(labels, predictions, average="macro", zero_division=0)
+        cm = confusion_matrix(labels, predictions, labels=[0, 1, 2])
+        print("\n" + title)
+        print("Accuracy:", accuracy)
+        print("Macro Precision:", macro_precision)
+        print("Macro Recall:", macro_recall)
+        print("Macro F1:", macro_f1)
+        print("Confusion Matrix:")
+        print(cm)
+        return accuracy, macro_f1
 
     print("Best validation accuracy:", best_val_accuracy)
+    print_metrics("Held-out domain test results:", test_labels, test_predictions)
+    seen_accuracy, seen_macro_f1 = print_metrics("Seen domain test results:", seen_labels, seen_predictions)
 
-    print("Test Accuracy:", accuracy)
-
-    print("Test Macro F1:", macro_f1)
-
-    print("Confusion Matrix:")
-
-    print(cm)
-
-    return accuracy, macro_f1
-
+    return seen_accuracy, seen_macro_f1
 
 #### run all four RQ3 experiments ####
 
