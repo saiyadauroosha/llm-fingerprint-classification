@@ -1,2 +1,192 @@
-model,test_loss,test_accuracy,test_precision,test_recall,test_f1
-RNN,0.988165340253285,0.5368303571428571,0.5216568488332437,0.5255922158774577,0.49704406280302393
+===== RQ1 TEST RESULTS =====
+Test Accuracy: 0.7600446428571429
+Test Macro Precision: 0.7599653542714041
+Test Macro Recall: 0.7593285957072645
+Test Macro F1: 0.7593614751336065
+
+Confusion Matrix:
+[[208  31  34]
+ [ 32 217  46]
+ [ 41  31 256]]
+
+===== RQ2 TEST RESULTS =====
+input_prompt
+Accuracy: 0.3247767857142857
+Macro Precision: 0.3195136688681873
+Macro Recall: 0.3181356537908832
+Macro F1: 0.3116668893538435
+Confusion Matrix:
+[[ 75  64 134]
+ [ 80  62 153]
+ [110  64 154]]
+
+ input_response
+Accuracy: 0.7734375
+Macro Precision: 0.7728434088732073
+Macro Recall: 0.7735253217683974
+Macro F1: 0.772706908026415
+Confusion Matrix:
+[[215  28  30]
+ [ 38 222  35]
+ [ 40  32 256]]
+
+ input_both
+Accuracy: 0.7745535714285714
+Macro Precision: 0.7749709066157258
+Macro Recall: 0.77365474083126
+Macro F1: 0.7737118781894902
+Confusion Matrix:
+[[214  24  35]
+ [ 36 216  43]
+ [ 32  32 264]]
+
+
+
+===== RQ3 TEST RESULTS =====
+
+Held-out domain: general
+____________________________________
+Best validation accuracy: 0.7202797202797203
+
+Held-out domain test results:
+Accuracy: 0.7844827586206896
+Macro Precision: 0.7953968253968254
+Macro Recall: 0.7864746419588317
+Macro F1: 0.7850989002400239
+Confusion Matrix:
+[[86 25 10]
+ [ 7 97  8]
+ [ 7 18 90]]
+
+Seen domain test results:
+Accuracy: 0.677007299270073
+Macro Precision: 0.6759805817189729
+Macro Recall: 0.6776425497670137
+Macro F1: 0.6736417308363011
+Confusion Matrix:
+[[110  19  23]
+ [ 37 109  37]
+ [ 34  27 152]]
+
+
+Held-out domain: code
+____________________________________
+Best validation accuracy: 0.8064992614475628
+
+Held-out domain test results:
+Accuracy: 0.6041666666666666
+Macro Precision: 0.5993570423950171
+Macro Recall: 0.5962962962962962
+Macro F1: 0.5954793806252692
+Confusion Matrix:
+[[32 15 13]
+ [15 48 27]
+ [ 9 16 65]]
+
+Seen domain test results:
+Accuracy: 0.788109756097561
+Macro Precision: 0.7890578752440924
+Macro Recall: 0.7891086034780338
+Macro F1: 0.7878544158489963
+Confusion Matrix:
+[[161  28  24]
+ [ 15 171  19]
+ [ 23  30 185]]
+
+
+Held-out domain: math
+____________________________________
+Best validation accuracy: 0.7894039735099337
+
+Held-out domain test results:
+Accuracy: 0.7197452229299363
+Macro Precision: 0.7233234601655655
+Macro Recall: 0.719366722527453
+Macro F1: 0.720509751286419
+Confusion Matrix:
+[[36  6  9]
+ [ 8 34  5]
+ [12  4 43]]
+
+Seen domain test results:
+Accuracy: 0.7483085250338295
+Macro Precision: 0.7470498752117964
+Macro Recall: 0.7478476797939564
+Macro F1: 0.7471633512462307
+Confusion Matrix:
+[[165  30  27]
+ [ 39 184  25]
+ [ 28  37 204]]
+
+
+
+Held-out domain: creative_writing
+____________________________________
+Best validation accuracy: 0.7674731182795699
+
+Held-out domain test results:
+Accuracy: 0.7350993377483444
+Macro Precision: 0.7292980243799917
+Macro Recall: 0.7292274213503004
+Macro F1: 0.7283436426116839
+Confusion Matrix:
+[[28  8  5]
+ [ 5 34  7]
+ [ 6  9 49]]
+
+Seen domain test results:
+Accuracy: 0.7422818791946308
+Macro Precision: 0.7430449439488535
+Macro Recall: 0.7415398270196775
+Macro F1: 0.7419569437874487
+Confusion Matrix:
+[[167  40  25]
+ [ 25 187  37]
+ [ 29  36 199]]
+
+
+
+
+===== RQ4 TEST RESULTS =====
+
+===================================
+Experiment 1: Full response
+===================================
+Best validation accuracy: 0.7904
+Test Accuracy: 0.76
+Test Macro Precision: 0.76
+Test Macro Recall: 0.7593
+Test Macro F1: 0.7594
+Confusion Matrix:
+[[208  31  34]
+ [ 32 217  46]
+ [ 41  31 256]]
+
+
+===================================
+Experiment 2: Remove formatting
+===================================
+Best validation accuracy: 0.7205
+Test Accuracy: 0.6853
+Test Macro Precision: 0.6877
+Test Macro Recall: 0.6894
+Test Macro F1: 0.6876
+Confusion Matrix:
+[[201  30  42]
+ [ 24 213  58]
+ [ 47  81 200]]
+
+
+===================================
+Experiment 3: Remove punctuation
+===================================
+Best validation accuracy: 0.6397
+Test Accuracy: 0.6362
+Test Macro Precision: 0.6371
+Test Macro Recall: 0.6389
+Test Macro F1: 0.6365
+Confusion Matrix:
+[[180  44  49]
+ [ 47 200  48]
+ [ 57  81 190]]
+
