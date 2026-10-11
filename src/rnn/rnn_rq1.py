@@ -2,6 +2,11 @@
 
 import re
 from collections import Counter
+import json
+from pathlib import Path
+from datetime import datetime
+from sklearn.metrics import classification_report
+
 
 import pandas as pd
 import torch
@@ -390,3 +395,26 @@ print("Test Macro F1:", test_macro_f1)
 
 print("\nConfusion Matrix:")
 print(cm)
+
+
+# 10. Save RNN results
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RESULTS_DIR = PROJECT_ROOT / "results" / "rnn"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+results = {
+    "model": "LSTM",
+    "test_accuracy": test_accuracy,
+    "test_macro_precision": test_macro_precision,
+    "test_macro_recall": test_macro_recall,
+    "test_macro_f1": test_macro_f1,
+    "confusion_matrix": cm.tolist()
+}
+
+results_file = RESULTS_DIR / "rq1_lstm_results.json"
+
+with open(results_file, "w") as f:
+    json.dump(results, f, indent=4)
+
+print(f"\nResults saved to: {results_file}")

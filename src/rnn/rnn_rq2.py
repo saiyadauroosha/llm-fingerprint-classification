@@ -12,6 +12,9 @@ import re
 import copy
 from collections import Counter
 
+import json
+from pathlib import Path
+
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -417,8 +420,26 @@ def run_experiment(train, val, test, column):
     return accuracy, macro_f1
 
 
-run_experiment(train, val, test, "input_prompt")
+#### Run and save RQ2 experiments
 
-run_experiment(train, val, test, "input_response")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RESULTS_DIR = PROJECT_ROOT / "results" / "rnn"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-run_experiment(train, val, test, "input_both")
+results_file = RESULTS_DIR / "rq2_lstm_results.json"
+
+all_results = {}
+
+for column in ["input_prompt", "input_response", "input_both"]:
+
+    accuracy, macro_f1 = run_experiment(train, val, test, column)
+
+    all_results[column] = {
+        "accuracy": accuracy,
+        "macro_f1": macro_f1
+    }
+
+with open(results_file, "w") as f:
+    json.dump(all_results, f, indent=4)
+
+print(f"\nRQ2 results saved to: {results_file}")
