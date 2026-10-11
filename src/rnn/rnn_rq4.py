@@ -356,17 +356,17 @@ def response_length_truncation(
 
     train["response"] = (
         train["response"]
-        .apply(match_length)
+        .apply(truncate_length)
     )
 
     val["response"] = (
         val["response"]
-        .apply(match_length)
+        .apply(truncate_length)
     )
 
     test["response"] = (
         test["response"]
-        .apply(match_length)
+        .apply(truncate_length)
     )
 
     return (
