@@ -1,0 +1,58 @@
+{
+  "experiment": "RQ1 CNN response-only",
+  "verified_at_utc": "2026-10-11T20:11:04.273868+00:00",
+  "git_base_commit": "6abadb2e3263966551b9da10bc413f5ee2f08002",
+  "script": "src/cnn/cnn_rq1.py",
+  "script_sha256": "abbcf259bfbe4032f2e93d175c0a16679a6c9731834eea129b6c70bf8c970a39",
+  "script_has_local_result_saving_changes": true,
+  "device": "cpu",
+  "packages": {
+    "python": "3.9.6",
+    "torch": "2.8.0",
+    "numpy": "2.0.2",
+    "pandas": "2.3.3",
+    "scikit_learn": "1.6.1",
+    "pyarrow": "21.0.0"
+  },
+  "model_args": {
+    "vocab_size": 55463,
+    "emb_dim": 200,
+    "num_filters": 100,
+    "kernel_sizes": [
+      3,
+      4,
+      5
+    ],
+    "n_classes": 3,
+    "dropout": 0.5
+  },
+  "training": {
+    "mode": "response",
+    "max_len": 512,
+    "best_epoch": 10,
+    "selection_metric": "validation_accuracy",
+    "best_val_accuracy": 0.9312227074235808,
+    "seed": 42,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "min_frequency": 2,
+    "epochs": 10
+  },
+  "split_counts": {
+    "train": 4188,
+    "validation": 916,
+    "test": 896
+  },
+  "split_sha256": {
+    "train": "47e8ac72b5121b69bb684c704af5c4ca1dbf21ea09bf7e76776609f87b60eaef",
+    "validation": "eab64e2e6b4161eb6eaf92ecb0f053f6c2bf1eaa6d3460eb1005aaf2c3cc223b",
+    "test": "7230d1d3548d8e8620031c783ff9f20f59a95aeb8ddd1a79fc937519ec32f6be"
+  },
+  "verification": {
+    "test_sample_ids_and_labels_match_fixed_split": true,
+    "metrics_recomputed_from_predictions": true,
+    "confusion_matrix_recomputed": true,
+    "checkpoint_reloaded_and_all_test_predictions_reproduced": true
+  },
+  "checkpoint_stored_locally_only": "best_model.pt is excluded from Git by the repository ignore rules"
+}
