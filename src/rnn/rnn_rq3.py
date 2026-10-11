@@ -379,38 +379,47 @@ def run_experiment(train, val, test, held_out_domain):
         print(cm)
         return accuracy, macro_f1
 
+
     print("Best validation accuracy:", best_val_accuracy)
-    print_metrics("Held-out domain test results:", test_labels, test_predictions)
-    seen_accuracy, seen_macro_f1 = print_metrics("Seen domain test results:", seen_labels, seen_predictions)
 
-    return seen_accuracy, seen_macro_f1
+    held_out_accuracy, held_out_macro_f1 = print_metrics(
+        "Held-out domain test results:",
+        test_labels,
+        test_predictions
+    )
 
-#### run all four RQ3 experiments ####
+    seen_accuracy, seen_macro_f1 = print_metrics(
+        "Seen domain test results:",
+        seen_labels,
+        seen_predictions
+    )
 
-run_experiment(
-    train,
-    val,
-    test,
-    "general"
-)
+    # Calculate the performance drop
+    accuracy_drop = seen_accuracy - held_out_accuracy
+    f1_drop = seen_macro_f1 - held_out_macro_f1
 
-run_experiment(
-    train,
-    val,
-    test,
-    "code"
-)
+    print("Accuracy drop:", accuracy_drop)
+    print("Macro F1 drop:", f1_drop)
 
-run_experiment(
-    train,
-    val,
-    test,
-    "math"
-)
+    return {
+        "held_out_domain": held_out_domain,
+        "seen_accuracy": seen_accuracy,
+        "held_out_accuracy": held_out_accuracy,
+        "accuracy_drop": accuracy_drop,
+        "seen_macro_f1": seen_macro_f1,
+        "held_out_macro_f1": held_out_macro_f1,
+        "macro_f1_drop": f1_drop
+    }
 
-run_experiment(
-    train,
-    val,
-    test,
-    "creative_writing"
-)
+results = []
+
+for domain in ["general", "code", "math", "creative_writing"]:
+    result = run_experiment(train, val, test, domain)
+    results.append(result)
+
+# Save all experiment results to a CSV file
+results_df = pd.DataFrame(results)
+results_df.to_csv("rq3_results.csv", index=False)
+
+print("\nRQ3 Summary:")
+print(results_df)
