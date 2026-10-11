@@ -20,7 +20,18 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, precision_score, recall_score
+
+
+import random
+import numpy as np 
+from torch.nn.utils.rnn import pack_padded_sequence
+
+# Set random seeds for reproducibility
+random.seed (42)
+np.random.seed(42)
+torch.manual_seed(42)
+
 
 
 # 1. Load the data
@@ -182,18 +193,34 @@ class TextLSTM(nn.Module):
         )
 
     def forward(self, x):
-
+        #Find each response's real length so padding doesn't affect final state
+        lengths = (x != 0). sum(dim=1).clamp(min=1).cpu()
+        # x: (batch size, sequence length, embedding dimension)
         embedded = self.embedding(x)
 
-        output, (hidden, cell) = self.lstm(
-            embedded
-        )
+        # LSTM processes the sequence
+        #This produces 
+        #-output: hidden states for every token
+        #-hidden: final hidden state
+        #-cell: final cell state
 
+        # NEW: Pack padded sequence so the LSTM stops at the actual text end
+        packed = pack_padded_sequence (
+            embedded, 
+            lengths, 
+            batch_first=True, 
+            enforce_sorted=False
+        )
+        output, (hidden, cell) = self.lstm(packed)
+
+        # Use the final hidden state
         final_hidden = hidden[-1]
 
+        # Predict the LLM family
         return self.fc(
             self.dropout(final_hidden)
         )
+
 
 
 # 7. Response transformations
@@ -271,7 +298,7 @@ def remove_punctuation(text):
 # Every response is then truncated to that same
 # maximum number of words.
 
-def length_match(
+def response_length_truncation(
     train,
     val,
     test
@@ -319,7 +346,7 @@ def length_match(
         common_length
     )
 
-    def match_length(text):
+    def truncate_length(text):
 
         words = str(text).split()
 
@@ -640,8 +667,8 @@ run_experiment(
 # 12. RQ4 Experiment 4
 # Length-matched responses
 
-train_matched, val_matched, test_matched = (
-    length_match(
+train_truncated, val_truncated, test_truncated = (
+    response_length_truncation(
         train,
         val,
         test
@@ -650,9 +677,9 @@ train_matched, val_matched, test_matched = (
 
 
 run_experiment(
-    train_matched,
-    val_matched,
-    test_matched,
-    "Experiment 4: Length matched",
+    train_truncated,
+    val_truncated, 
+    test_truncated,
+    "Experiment 4: Response-length truncation",
     full_response
 )
