@@ -190,3 +190,17 @@ Confusion Matrix:
  [ 47 200  48]
  [ 57  81 190]]
 
+
+
+===================================
+Experiment 4: Response-length truncation
+===================================
+Best validation accuracy: 0.7609
+Test Accuracy: 0.7355
+Test Macro Precision: 0.739
+Test Macro Recall: 0.7386
+Test Macro F1: 0.7354
+Confusion Matrix:
+[[215  31  27]
+ [ 52 219  24]
+ [ 53  50 225]]
