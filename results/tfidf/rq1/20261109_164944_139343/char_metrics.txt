@@ -1,0 +1,13 @@
+data=splits_v2
+C=10
+ngrams=(3, 5)
+accuracy=0.920045
+macro_f1=0.920367
+vocabulary_size=100000
+train_size=4182
+test_size=888
+confusion_matrix_rows_actual_columns_predicted=
+        GPT  Claude  Gemini
+GPT     247      16       6
+Claude    8     278       8
+Gemini    8      25     292
