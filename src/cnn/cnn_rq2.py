@@ -94,29 +94,43 @@ def tokenize(text):
     return re.findall(r"\w+|\n|[^\w\s]", text.replace("\r\n", "\n").replace("\r", "\n"))
 
 
-def build_vocab(train, mode="response"):
-    # Count only the tokens the model actually sees for this input mode,
-    # matching the RNN team's per-input vocabulary.
-    counts = Counter(token for row in train.to_dict("records")
-                     for token in text_tokens(row, mode) if token != "<sep>")
-    vocab = {"<pad>": 0, "<unk>": 1, "<sep>": 2}
-    for token, count in counts.items():
-        if count >= MIN_FREQUENCY and token not in vocab:
+def build_vocab(train):
+    # Assign response IDs first so they match the RQ1 response vocabulary.
+    vocab = {"<pad>": 0, "<unk>": 1}
+
+    response_counts = Counter(
+        token
+        for text in train["response"]
+        for token in tokenize(text)[:MAX_LEN]
+    )
+    for token, count in response_counts.items():
+        if count >= MIN_FREQUENCY:
             vocab[token] = len(vocab)
+
+    vocab["<sep>"] = len(vocab)
+
+    prompt_counts = Counter(
+        token
+        for text in train["prompt"]
+        for token in tokenize(text)[:PROMPT_LEN]
+    )
+    for token, count in prompt_counts.items():
+        if count >= MIN_FREQUENCY:
+            vocab[f"prompt:{token}"] = len(vocab)
+
     return vocab
 
 
-# 4. Convert one example into token IDs and record its true length.
 def text_tokens(row, mode="response"):
-    if mode == "prompt":
-        return tokenize(row["prompt"])[:PROMPT_LEN]
     if mode == "response":
         return tokenize(row["response"])[:MAX_LEN]
+
+    prompt = [f"prompt:{token}" for token in tokenize(row["prompt"])[:PROMPT_LEN]]
+    if mode == "prompt":
+        return prompt
     if mode == "prompt_response":
-        # <sep> marks "prompt ends here, response starts here". Adding the
-        # prompt never reduces the number of retained response tokens.
-        return (tokenize(row["prompt"])[:PROMPT_LEN] + ["<sep>"]
-                + tokenize(row["response"])[:MAX_LEN])
+        return prompt + ["<sep>"] + tokenize(row["response"])[:MAX_LEN]
+
     raise ValueError(f"Unknown input mode: {mode}")
 
 
@@ -224,7 +238,7 @@ def train_cnn(train, val, mode, device, epochs):
     for name, frame in (("training", train), ("validation", val)):
         if set(frame.family) != set(CLASS_NAMES):
             raise ValueError(f"All three families must occur in the {name} subset.")
-    vocab = build_vocab(train, mode)
+    vocab = build_vocab(train)
     train_dl = make_loader(train, vocab, mode, shuffle=True)
     val_dl = make_loader(val, vocab, mode)
     model_args = dict(vocab_size=len(vocab), emb_dim=EMB_DIM, num_filters=NUM_FILTERS,
@@ -356,7 +370,7 @@ def main(argv=None):
         print(f"{label}: accuracy {100 * accuracy_change:+.2f} percentage points, "
               f"macro F1 {f1_change:+.4f}")
     print("This is a single-seed comparison. Repeat predefined seeds before claiming a reliable improvement.")
-    print("Prompt inclusion also changes the vocabulary; vocabulary sizes are reported above.")
+    print("All three modes use the same training-only vocabulary and embedding size.")
     return table
 
 

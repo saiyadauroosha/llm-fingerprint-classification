@@ -2,7 +2,7 @@
 
 Self-contained: imports only installed libraries, never other project Python files.
 Run from the repository root:
-    python src/cnn/rq3_cnn.py
+    python src/cnn/cnn_rq3.py
 
 Optional: --data-dir PATH --output-dir NEW_PATH --epochs 10 --device cpu
 Edit the settings below to change embedding size, filters or input lengths.
@@ -15,6 +15,7 @@ import argparse
 import json
 import random
 import re
+import unicodedata
 import warnings
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -89,7 +90,7 @@ def tokenize(text):
 
 
 def build_vocab(train, mode="response"):
-    counts = Counter(token for text in train.response for token in tokenize(text))
+    counts = Counter(token for text in train.response for token in tokenize(text)[:MAX_LEN])
     if mode == "prompt_response":
         counts.update(token for text in train.prompt for token in tokenize(text))
     vocab = {"<pad>": 0, "<unk>": 1, "<sep>": 2}
@@ -322,6 +323,22 @@ def domain_partitions(train, val, test, held_out):
     return source_train, source_val, seen_test, unseen_test
 
 
+def response_overlap(source_train, source_val, unseen_test):
+    def normalize(text):
+        return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+    target = set(unseen_test.response)
+    normalized_target = {normalize(text) for text in target}
+    counts = {}
+    for name, frame in (("train", source_train), ("validation", source_val)):
+        source = set(frame.response)
+        counts[f"{name}_test_exact_response_overlap"] = len(source & target)
+        counts[f"{name}_test_normalized_response_overlap"] = len(
+            {normalize(text) for text in source} & normalized_target
+        )
+    return counts
+
+
 def main(argv=None):
     def extra(parser):
         parser.add_argument("--held-out-domain", help="For example: code. Default: run every domain.")
@@ -341,6 +358,9 @@ def main(argv=None):
     for target in targets:
         print(f"\n===== UNSEEN DOMAIN: {target} =====")
         source_train, source_val, seen_test, unseen_test = domain_partitions(train, val, test, target)
+        overlaps = response_overlap(source_train, source_val, unseen_test)
+        if any(overlaps.values()):
+            warnings.warn(f"{target}: cross-domain response overlap with held-out test: {overlaps}")
         # Only SOURCE training responses build the vocabulary. SOURCE validation
         # selects the epoch. No target-domain examples participate in either.
         model, vocab, checkpoint, history = train_cnn(source_train, source_val, "response", device, args.epochs)
@@ -355,7 +375,8 @@ def main(argv=None):
                            "unseen_test_n": len(unseen_test), "best_epoch": checkpoint["best_epoch"],
                            "seen_accuracy": seen["accuracy"], "unseen_accuracy": unseen["accuracy"],
                            "seen_macro_f1": seen["macro_f1"], "unseen_macro_f1": unseen["macro_f1"],
-                           "unseen_minus_seen_f1": unseen["macro_f1"] - seen["macro_f1"]})
+                           "unseen_minus_seen_f1": unseen["macro_f1"] - seen["macro_f1"],
+                           **overlaps})
         del model
 
     table = pd.DataFrame(comparison)

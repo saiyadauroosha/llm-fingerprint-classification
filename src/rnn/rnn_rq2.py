@@ -8,13 +8,16 @@
 # 3. Input + Output -> prompt + response
 
 
-import re
+import argparse
 import copy
-from collections import Counter
-
 import json
+import random
+import re
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -22,21 +25,31 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, precision_score, recall_score
 
 
-import random
-import numpy as np 
 from torch.nn.utils.rnn import pack_padded_sequence
 
-# Set random seeds for reproducibility
-random.seed (42)
-np.random.seed(42)
-torch.manual_seed(42)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SEED = 42
+PROMPT_LEN = 128
+MAX_LEN = 512
+MIN_FREQUENCY = 2
 
 ##### 1. Load the fixed train, validation, and test splits #####
 
+parser = argparse.ArgumentParser(description="Train the three RQ2 LSTM input modes.")
+parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data" / "splits")
+parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "results" / "rnn" / "rq2")
+parser.add_argument("--epochs", type=int, default=10)
+args = parser.parse_args()
+if args.epochs < 1:
+    parser.error("--epochs must be at least 1")
 
-train = pd.read_parquet("data/splits/train.parquet")
-val = pd.read_parquet("data/splits/validation.parquet")
-test = pd.read_parquet("data/splits/test.parquet")
+train = pd.read_parquet(args.data_dir / "train.parquet")
+val = pd.read_parquet(args.data_dir / "validation.parquet")
+test = pd.read_parquet(args.data_dir / "test.parquet")
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+run_dir = args.output_dir / timestamp
+run_dir.mkdir(parents=True, exist_ok=False)
 
 # convert the LLM names into numbers that the model can use
 label2id = {
@@ -50,64 +63,44 @@ label2id = {
 # breaks each response into smaller tokens, like words, newlines, and punctuation
 
 def tokenize(text):
-    return re.findall(r"<sep>|\w+|\n|[^\w\s]", str(text), flags=re. IGNORECASE)
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    return re.findall(r"\w+|\n|[^\w\s]", text)
 
 
 ##### 3. Function to build vocabulary from training data ####
 
-## vocab is built from the training data only and do not use validation or test data to create the vocab
+def build_vocab(train):
+    vocab = {"<pad>": 0, "<unk>": 1}
 
-
-def build_vocab(texts):
-
-    # counts how often each token appears in the training data
-    counts = Counter(
+    response_counts = Counter(
         token
-        for text in texts
-        for token in tokenize(text)
+        for text in train["response"]
+        for token in tokenize(text)[:MAX_LEN]
     )
-
-    # <pad> is used to fill in the empty space when a response is shorter than the maximum length
-    # <unk> is used for tokens that are not in the vocab
-    vocab = {
-        "<pad>": 0,
-        "<unk>": 1
-    }
-
-    # only include tokens that appear at least twice
-    # This keeps the vocab from getting unnecessarily large
-    for token, count in counts.items():
-        if count >= 2:
+    for token, count in response_counts.items():
+        if count >= MIN_FREQUENCY:
             vocab[token] = len(vocab)
+
+    vocab["<sep>"] = len(vocab)
+
+    prompt_counts = Counter(
+        token
+        for text in train["prompt"]
+        for token in tokenize(text)[:PROMPT_LEN]
+    )
+    for token, count in prompt_counts.items():
+        if count >= MIN_FREQUENCY:
+            vocab[f"prompt:{token}"] = len(vocab)
 
     return vocab
 
 
 ##### 4. Convert text to numbers #####
-# The LSTM needs numbers instead of text, so each token is replaced by its num from the vocab
-# we also made the inputs the same length; longer inputs are cut off at 512 tokens
-# shorter texts are filled with <pad> tokens
-
-MAX_LEN = 512
-
-def encode(text, vocab, max_len=MAX_LEN):
-# Added max_len parameter so different inputs can have their own length limits
-
-    tokens = tokenize(text)
-
-    # convert each token into its vocab number
-    # if a token is not in the vocab use <unk> = 1
-
-    ids = [
-        vocab.get(token, 1)
-        for token in tokens
-    ]
-
-    ids = ids[:max_len]
-
-    ids += [0] * (max_len - len(ids))
-
-    return ids
+def encode(tokens, vocab, max_len):
+    ids = [vocab.get(token, vocab["<unk>"]) for token in tokens[:max_len]]
+    if not ids:
+        ids = [vocab["<unk>"]]
+    return ids + [vocab["<pad>"]] * (max_len - len(ids))
 
 
 ##### 5. Dataset #####
@@ -120,8 +113,8 @@ class TextDataset(Dataset):
         # convert the text into numbers using the vocab
 
         self.x = [
-            encode(text, vocab, max_len)
-            for text in df[column]
+            encode(tokens, vocab, max_len)
+            for tokens in df[column]
         ]
 
         # convert the LLM names into numbers that the model can use
@@ -217,59 +210,54 @@ class TextLSTM(nn.Module):
 
 #### RQ2 Inputs #####
 
-# NEW: Prompt only limited to 128 tokens
-train["input_prompt"] = train["prompt"].apply(lambda text: " ".join(tokenize(text)[:128]))
-val["input_prompt"] = val["prompt"].apply(lambda text: " ".join(tokenize(text)[:128]))
-test["input_prompt"] = test["prompt"].apply(lambda text: " ".join(tokenize(text)[:128]))
+vocab = build_vocab(train)
 
-# Response only: response input limited to 512 tokens
-train["input_response"] = train["response"]
-val["input_response"] = val["response"]
-test["input_response"] = test["response"]
-
-# NEW: Prompt (128 tokens) + explicit separator (<sep>) + response (512 tokens)
-def combine_prompt_response(prompt, response):
-    prompt_tokens = tokenize(prompt)[:128]
-    response_tokens = tokenize(response)[:512]
-    return " ".join(prompt_tokens) + " <sep> " + " ".join(response_tokens)
-
-train["input_both"] = [combine_prompt_response(p, r) for p, r in zip(train["prompt"], train["response"])]
-val["input_both"] = [combine_prompt_response(p, r) for p, r in zip(val["prompt"], val["response"])]
-test["input_both"] = [combine_prompt_response(p, r) for p, r in zip(test["prompt"], test["response"])]
+for frame in (train, val, test):
+    frame["input_prompt"] = frame["prompt"].map(
+        lambda text: [f"prompt:{token}" for token in tokenize(text)[:PROMPT_LEN]]
+    )
+    frame["input_response"] = frame["response"].map(
+        lambda text: tokenize(text)[:MAX_LEN]
+    )
+    frame["input_both"] = [
+        prompt + ["<sep>"] + response
+        for prompt, response in zip(frame["input_prompt"], frame["input_response"])
+    ]
 
 #### Train and evaluate the model
 
-def run_experiment(train, val, test, column):
+def run_experiment(train, val, test, column, vocab, run_dir, epochs):
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
 
-    # Built vocabulary from training data only
-    vocab = build_vocab(train[column])
-
-    # Create datasets
-
-    # convert the selected text into token IDs and convert the LLM names into numeric labels
-    max_len = {"input_prompt": 128, "input_response": 512, "input_both": 641}[column]
+    max_len = {
+        "input_prompt": PROMPT_LEN,
+        "input_response": MAX_LEN,
+        "input_both": PROMPT_LEN + 1 + MAX_LEN,
+    }[column]
     train_ds = TextDataset(train, column, vocab, max_len)
     val_ds = TextDataset(val, column, vocab, max_len)
     test_ds = TextDataset(test, column, vocab, max_len)
-
-
-
-    # Create loaders
-    # Loaders are used to load the data in batches during training and evaluation
     train_dl = DataLoader(
         train_ds,
         batch_size=64,
-        shuffle=True
+        shuffle=True,
+        generator=torch.Generator().manual_seed(SEED),
     )
 
     val_dl = DataLoader(
         val_ds,
-        batch_size=64
+        batch_size=64,
+        shuffle=False,
+        generator=torch.Generator().manual_seed(SEED),
     )
 
     test_dl = DataLoader(
         test_ds,
-        batch_size=64
+        batch_size=64,
+        shuffle=False,
+        generator=torch.Generator().manual_seed(SEED),
     )
 
     ## Create model ##
@@ -291,10 +279,10 @@ def run_experiment(train, val, test, column):
 
     # keep track of the best model based on validation accuracy
 
-    best_val_accuracy = 0
+    best_val_accuracy = -1.0
     best_model = None
 
-    for epoch in range(10):
+    for epoch in range(epochs):
 
         model.train() # set the model to training mode
 
@@ -417,22 +405,23 @@ def run_experiment(train, val, test, column):
     print("Confusion Matrix:")
     print(cm)
 
+    id2label = {index: family for family, index in label2id.items()}
+    predictions = test[["sample_id", "family"]].copy()
+    predictions["predicted_family"] = [id2label[index] for index in test_predictions]
+    predictions.to_csv(run_dir / f"{column}_test_predictions.csv", index=False)
+
     return accuracy, macro_f1
 
 
 #### Run and save RQ2 experiments
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RESULTS_DIR = PROJECT_ROOT / "results" / "rnn"
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-results_file = RESULTS_DIR / "rq2_lstm_results.json"
+results_file = run_dir / "rq2_lstm_results.json"
 
 all_results = {}
 
 for column in ["input_prompt", "input_response", "input_both"]:
 
-    accuracy, macro_f1 = run_experiment(train, val, test, column)
+    accuracy, macro_f1 = run_experiment(train, val, test, column, vocab, run_dir, args.epochs)
 
     all_results[column] = {
         "accuracy": accuracy,

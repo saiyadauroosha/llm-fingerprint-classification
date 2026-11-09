@@ -6,56 +6,43 @@
 # 1. Full response
 # 2. Remove formatting
 # 3. Remove punctuation
-# 4. Length-matched responses
+# 4. First 128 response tokens
 
 
-import re
+import argparse
 import copy
-from pathlib import Path
+import hashlib
+import json
+import random
+import re
 from collections import Counter
+from datetime import datetime
+from io import BytesIO
+from itertools import islice
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, precision_score, recall_score
-
-
-import random
-import numpy as np 
+from sklearn.metrics import accuracy_score, f1_score
 from torch.nn.utils.rnn import pack_padded_sequence
 
-# Set random seeds for reproducibility
-random.seed (42)
-np.random.seed(42)
-torch.manual_seed(42)
-
-
-
-# 1. Load the data
-
-# Find the project folder automatically.
-# This allows the script to work whether it is run
-# from the project root or from src/rnn.
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
 DATA_DIR = PROJECT_ROOT / "data" / "splits"
-
-
-train = pd.read_parquet(
-    DATA_DIR / "train.parquet"
+SEED = 42
+MAX_LEN = 512
+SHORT_LEN = 128
+TOKEN_PATTERN = re.compile(r"\w+|\n|[^\w\s]")
+PUNCTUATION_PATTERN = re.compile(r"[^\w\s]")
+MARKDOWN_LINE_MARKER = re.compile(
+    r"^[ \t]{0,3}(?:#{1,6}(?=[ \t])|(?:[-*+]|\d+[.)])(?=[ \t])"
+    r"|>+(?=[ \t]))"
 )
-
-val = pd.read_parquet(
-    DATA_DIR / "validation.parquet"
-)
-
-test = pd.read_parquet(
-    DATA_DIR / "test.parquet"
-)
+MARKDOWN_FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 
 
 label2id = {
@@ -67,12 +54,12 @@ label2id = {
 
 # 2. Tokenizer
 
-def tokenize(text):
+def normalize_line_endings(text):
+    return str(text).replace("\r\n", "\n").replace("\r", "\n")
 
-    return re.findall(
-        r"\w+|\n|[^\w\s]",
-        str(text)
-    )
+
+def full_response(text):
+    return TOKEN_PATTERN.findall(normalize_line_endings(text))[:MAX_LEN]
 
 
 # 3. Build vocabulary from training data only
@@ -82,7 +69,7 @@ def build_vocab(texts):
     counts = Counter(
         token
         for text in texts
-        for token in tokenize(text)
+        for token in full_response(text)
     )
 
     vocab = {
@@ -101,35 +88,19 @@ def build_vocab(texts):
 
 # 4. Convert text to numbers
 
-MAX_LEN = 512
-
-
-def encode(text, vocab):
-
-    tokens = tokenize(text)
-
-    ids = [
-        vocab.get(token, 1)
-        for token in tokens
-    ]
-
-    ids = ids[:MAX_LEN]
-
-    ids += [0] * (
-        MAX_LEN - len(ids)
-    )
-
-    return ids
+def encode(tokens, vocab):
+    ids = [vocab.get(token, vocab["<unk>"]) for token in tokens] or [vocab["<unk>"]]
+    return ids + [vocab["<pad>"]] * (MAX_LEN - len(ids))
 
 
 # 5. Dataset
 
 class TextDataset(Dataset):
 
-    def __init__(self, df, vocab):
+    def __init__(self, df, vocab, transform):
 
         self.x = [
-            encode(text, vocab)
+            encode(transform(text), vocab)
             for text in df["response"]
         ]
 
@@ -225,255 +196,64 @@ class TextLSTM(nn.Module):
 
 # 7. Response transformations
 
-
-# Experiment 1:
-# Full response: this uses the full response text as-is, without any modifications.
-
-def full_response(text):
-
-    return str(text)
-
-
-# Experiment 2:
-# Remove formatting
-#
-# Removes:
-# - newlines
-# - common Markdown formatting symbols
-# - extra whitespace
-
 def remove_formatting(text):
+    # Find the same visible prefix as the full-response arm before removing
+    # line breaks and Markdown heading, list, quote, and fence markers.
+    text = normalize_line_endings(text)
+    end = 0
+    for match in islice(TOKEN_PATTERN.finditer(text), MAX_LEN):
+        end = match.end()
+    lines = []
+    open_fence = ""
+    for line in text[:end].split("\n"):
+        match = MARKDOWN_FENCE.match(line)
+        if not open_fence:
+            if match:
+                open_fence = match[1]
+                line = line[match.end():]
+            else:
+                line = MARKDOWN_LINE_MARKER.sub(" ", line)
+        elif match and match[1].startswith(open_fence) and not line[match.end():].strip():
+            open_fence = ""
+            line = line[match.end():]
+        lines.append(line)
+    visible = "\n".join(lines)
+    return [token for token in TOKEN_PATTERN.findall(visible) if token != "\n"]
 
-    text = str(text)
-
-    text = text.replace(
-        "\n",
-        " "
-    )
-
-    text = re.sub(
-        r"[*_`#>-]",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text.strip()
-
-
-# Experiment 3:
-# Remove punctuation from the responses, this tests with 
-# punctuation had an effect in how the RNN classifies the responses
 
 def remove_punctuation(text):
-
-    text = str(text)
-
-    text = re.sub(
-        r"[^\w\s]",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
-
-    return text.strip()
+    # Remove punctuation tokens without collapsing newlines or revealing later tokens.
+    return [token for token in full_response(text) if not PUNCTUATION_PATTERN.fullmatch(token)]
 
 
-# Experiment 4:
-# Length matching
-#
-# We find a common word limit based on the shortest
-# maximum response length across the three splits.
-#
-# Every response is then truncated to that same
-# maximum number of words.
-
-def response_length_truncation(
-    train,
-    val,
-    test
-):
-
-    train = train.copy()
-
-    val = val.copy()
-
-    test = test.copy()
-
-    train_lengths = (
-        train["response"]
-        .astype(str)
-        .apply(
-            lambda x: len(x.split())
-        )
-    )
-
-    val_lengths = (
-        val["response"]
-        .astype(str)
-        .apply(
-            lambda x: len(x.split())
-        )
-    )
-
-    test_lengths = (
-        test["response"]
-        .astype(str)
-        .apply(
-            lambda x: len(x.split())
-        )
-    )
-
-    common_length = min(
-        train_lengths.max(),
-        val_lengths.max(),
-        test_lengths.max(),
-        MAX_LEN
-    )
-
-    print(
-        "Common maximum word length:",
-        common_length
-    )
-
-    def truncate_length(text):
-
-        words = str(text).split()
-
-        return " ".join(
-            words[:common_length]
-        )
-
-    train["response"] = (
-        train["response"]
-        .apply(truncate_length)
-    )
-
-    val["response"] = (
-        val["response"]
-        .apply(truncate_length)
-    )
-
-    test["response"] = (
-        test["response"]
-        .apply(truncate_length)
-    )
-
-    return (
-        train,
-        val,
-        test
-    )
+def short_response(text):
+    return full_response(text)[:SHORT_LEN]
 
 
 # 8. Run one RQ4 experiment
 
-def run_experiment(
-    train,
-    val,
-    test,
-    experiment_name,
-    transform
-):
+def run_experiment(train, val, test, vocab, experiment_name, transform, epochs):
+    print(f"\n===== {experiment_name} =====", flush=True)
 
-    print("\n===================================")
-    print(experiment_name)
-    print("===================================")
-
-    # Make copies so the original data is not changed
-
-    train_data = train.copy()
-
-    val_data = val.copy()
-
-    test_data = test.copy()
-
-    # Apply transformation
-
-    train_data["response"] = (
-        train_data["response"]
-        .apply(transform)
-    )
-
-    val_data["response"] = (
-        val_data["response"]
-        .apply(transform)
-    )
-
-    test_data["response"] = (
-        test_data["response"]
-        .apply(transform)
-    )
-
-    print(
-        "Training examples:",
-        len(train_data)
-    )
-
-    print(
-        "Validation examples:",
-        len(val_data)
-    )
-
-    print(
-        "Test examples:",
-        len(test_data)
-    )
-
-    # Build vocabulary from training data ONLY
-
-    vocab = build_vocab(
-        train_data["response"]
-    )
-
-    print(
-        "Vocabulary size:",
-        len(vocab)
-    )
-
-    # Create datasets
-
-    train_ds = TextDataset(
-        train_data,
-        vocab
-    )
-
-    val_ds = TextDataset(
-        val_data,
-        vocab
-    )
-
-    test_ds = TextDataset(
-        test_data,
-        vocab
-    )
-
-    # Create data loaders
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
 
     train_dl = DataLoader(
-        train_ds,
+        TextDataset(train, vocab, transform),
         batch_size=64,
-        shuffle=True
+        shuffle=True,
+        generator=torch.Generator().manual_seed(SEED),
     )
-
     val_dl = DataLoader(
-        val_ds,
-        batch_size=64
+        TextDataset(val, vocab, transform),
+        batch_size=64,
+        generator=torch.Generator().manual_seed(SEED),
     )
-
     test_dl = DataLoader(
-        test_ds,
-        batch_size=64
+        TextDataset(test, vocab, transform),
+        batch_size=64,
+        generator=torch.Generator().manual_seed(SEED),
     )
 
     # Create model
@@ -491,11 +271,11 @@ def run_experiment(
 
     # Train
 
-    best_val_accuracy = 0
+    best_val_accuracy = -1.0
 
     best_model = None
 
-    for epoch in range(10):
+    for epoch in range(epochs):
 
         model.train()
 
@@ -602,7 +382,9 @@ def run_experiment(
     macro_f1 = f1_score(
         test_labels,
         test_predictions,
-        average="macro"
+        labels=list(label2id.values()),
+        average="macro",
+        zero_division=0,
     )
 
     # Print results
@@ -628,58 +410,58 @@ def run_experiment(
     )
 
 
-# 9. RQ4 Experiment 1
-# Full response
+def main():
+    parser = argparse.ArgumentParser(description="Run the four RQ4 LSTM ablations.")
+    parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "results" / "rnn" / "rq4",
+                        help="Parent directory for timestamped results")
+    parser.add_argument("--epochs", type=int, default=10)
+    args = parser.parse_args()
+    if args.epochs < 1:
+        parser.error("--epochs must be at least 1")
 
-run_experiment(
-    train,
-    val,
-    test,
-    "Experiment 1: Full response",
-    full_response
-)
+    frames, split_sha256 = {}, {}
+    for name in ("train", "validation", "test"):
+        data = (args.data_dir / f"{name}.parquet").read_bytes()
+        frames[name] = pd.read_parquet(BytesIO(data))
+        split_sha256[name] = hashlib.sha256(data).hexdigest()
+    train, val, test = frames["train"], frames["validation"], frames["test"]
+    if any(frame.empty for frame in (train, val, test)):
+        raise ValueError("Train, validation, and test splits must be nonempty.")
 
-
-# 10. RQ4 Experiment 2
-# Remove formatting
-
-run_experiment(
-    train,
-    val,
-    test,
-    "Experiment 2: Remove formatting",
-    remove_formatting
-)
-
-
-# 11. RQ4 Experiment 3
-# Remove punctuation
-
-run_experiment(
-    train,
-    val,
-    test,
-    "Experiment 3: Remove punctuation",
-    remove_punctuation
-)
-
-
-# 12. RQ4 Experiment 4
-# Length-matched responses
-
-train_truncated, val_truncated, test_truncated = (
-    response_length_truncation(
-        train,
-        val,
-        test
+    # Keep the RQ1 vocabulary and token IDs fixed across all ablations.
+    vocab = build_vocab(train["response"])
+    run_dir = args.output_dir / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    run_dir.mkdir(parents=True, exist_ok=False)
+    experiments = (
+        ("full_response", full_response, MAX_LEN),
+        ("remove_formatting", remove_formatting, MAX_LEN),
+        ("remove_punctuation", remove_punctuation, MAX_LEN),
+        ("first_128_tokens", short_response, SHORT_LEN),
     )
-)
+    results = []
+    for name, transform, max_tokens in experiments:
+        accuracy, macro_f1 = run_experiment(train, val, test, vocab, name, transform, args.epochs)
+        results.append({
+            "experiment": name,
+            "max_input_tokens": max_tokens,
+            "accuracy": accuracy,
+            "macro_f1": macro_f1,
+            "test_examples": len(test),
+            "vocab_size": len(vocab),
+            "seed": SEED,
+            "epochs": args.epochs,
+        })
+    output = run_dir / "test_metrics.csv"
+    pd.DataFrame(results).to_csv(output, index=False)
+    (run_dir / "run_metadata.json").write_text(json.dumps({
+        "split_sha256": split_sha256,
+        "split_counts": {name: len(frame) for name, frame in frames.items()},
+        "formatting_removal": "Line breaks and Markdown heading, list, quote, and fence markers.",
+        "vocab_source": "First 512 tokens from unmodified training responses.",
+    }, indent=2) + "\n", encoding="utf-8")
+    print(f"\nRQ4 results saved to: {output}")
 
 
-run_experiment(
-    train_truncated,
-    val_truncated, 
-    test_truncated,
-    "Experiment 4: Response-length truncation",
-    full_response
-)
+if __name__ == "__main__":
+    main()

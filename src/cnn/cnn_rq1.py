@@ -1,11 +1,16 @@
 # RQ1: Identify the LLM from its response using a CNN
  
+import argparse
+import copy
+import hashlib
+import json
+import platform
 import re
 
-import copy
-
 from collections import Counter
-
+from datetime import datetime
+from importlib.metadata import version
+from io import BytesIO
 from pathlib import Path
  
 import pandas as pd
@@ -16,25 +21,45 @@ import torch.nn as nn
 
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
  
  
 # 1. Load the fixed train/validation/test splits
 
-# Paths are resolved relative to this file, so the script runs
-# from the project root or from src/cnn.
+# Resolve paths from this file, so the working directory does not matter.
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DATA_DIR = PROJECT_ROOT / "data" / "splits"
+MAX_LEN = 512
+MIN_FREQUENCY = 2
+SEED = 42
 
-train = pd.read_parquet(DATA_DIR / "train.parquet")
+parser = argparse.ArgumentParser(description="Train the RQ1 response-only CNN.")
+parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data" / "splits",
+                    help="Directory containing train, validation, and test Parquet files.")
+parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "results" / "cnn" / "rq1",
+                    help="Parent directory for the timestamped run folder.")
+parser.add_argument("--epochs", type=int, default=10)
+args = parser.parse_args()
+if args.epochs < 1:
+    parser.error("--epochs must be at least 1.")
 
-val = pd.read_parquet(DATA_DIR / "validation.parquet")
+frames, split_sha256 = {}, {}
+for split in ("train", "validation", "test"):
+    split_bytes = (args.data_dir / f"{split}.parquet").read_bytes()
+    frames[split] = pd.read_parquet(BytesIO(split_bytes))
+    if frames[split].empty:
+        raise ValueError(f"{split}: cannot run on an empty split.")
+    split_sha256[split] = hashlib.sha256(split_bytes).hexdigest()
+train, val, test = frames["train"], frames["validation"], frames["test"]
 
-test = pd.read_parquet(DATA_DIR / "test.parquet")
- 
-torch.manual_seed(42)
+# Keep each run in a new folder so earlier results are not overwritten.
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+OUTPUT_DIR = args.output_dir / timestamp
+OUTPUT_DIR.mkdir(parents=True, exist_ok=False)
+print("Results folder:", OUTPUT_DIR, flush=True)
+
+torch.manual_seed(SEED)
  
 # Convert family names into integer labels.
 
@@ -55,12 +80,12 @@ family_names = list(label2id.keys())
  
 def tokenize(text):
 
-    # Keep words, newlines, punctuation, and Markdown symbols.
-
-    return re.findall(r"\w+|\n|[^\w\s]", str(text))
+    # Match RQ2's treatment of line endings and keep structural tokens.
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    return re.findall(r"\w+|\n|[^\w\s]", text)[:MAX_LEN]
  
  
-# 3. Build vocabulary from TRAINING data only
+# 3. Count only the training tokens within the model's response window.
  
 counts = Counter(
 
@@ -84,7 +109,7 @@ vocab = {
 
 for token, count in counts.items():
 
-    if count >= 2:
+    if count >= MIN_FREQUENCY:
 
         vocab[token] = len(vocab)
  
@@ -93,11 +118,9 @@ print("Vocabulary size:", len(vocab))
  
 # 4. Convert text into numbers
  
-MAX_LEN = 512
- 
 def encode(text):
 
-    tokens = tokenize(text)[:MAX_LEN]
+    tokens = tokenize(text)
  
     # Unknown tokens receive ID 1.
 
@@ -163,7 +186,8 @@ train_dl = DataLoader(
 
     batch_size=64,
 
-    shuffle=True
+    shuffle=True,
+    generator=torch.Generator().manual_seed(SEED)
 
 )
  
@@ -173,7 +197,8 @@ val_dl = DataLoader(
 
     batch_size=64,
 
-    shuffle=False
+    shuffle=False,
+    generator=torch.Generator().manual_seed(SEED)
 
 )
  
@@ -183,7 +208,8 @@ test_dl = DataLoader(
 
     batch_size=64,
 
-    shuffle=False
+    shuffle=False,
+    generator=torch.Generator().manual_seed(SEED)
 
 )
  
@@ -336,13 +362,15 @@ optimizer = torch.optim.Adam(
  
 loss_fn = nn.CrossEntropyLoss()
  
-EPOCHS = 10
+EPOCHS = args.epochs
  
 best_val_accuracy = -1
 
 best_model_state = None
 
 best_epoch = None
+
+history = []
  
 for epoch in range(EPOCHS):
  
@@ -409,6 +437,21 @@ for epoch in range(EPOCHS):
         val_predictions
 
     )
+
+    val_macro_f1 = f1_score(
+        val_labels,
+        val_predictions,
+        labels=[0, 1, 2],
+        average="macro",
+        zero_division=0
+    )
+
+    history.append({
+        "epoch": epoch + 1,
+        "train_loss": average_loss,
+        "val_accuracy": float(val_accuracy),
+        "val_macro_f1": float(val_macro_f1)
+    })
  
     print(
 
@@ -438,6 +481,58 @@ model.load_state_dict(best_model_state)
 print("\nBest epoch:", best_epoch)
 
 print("Best validation accuracy:", best_val_accuracy)
+
+model_args = {
+    "vocab_size": len(vocab),
+    "emb_dim": model.embedding.embedding_dim,
+    "num_filters": model.convs[0].out_channels,
+    "kernel_sizes": list(model.kernel_sizes),
+    "n_classes": model.fc.out_features,
+    "dropout": model.dropout.p
+}
+training = {
+    "mode": "response",
+    "max_len": MAX_LEN,
+    "vocab_source": "training_response_prefix",
+    "best_epoch": best_epoch,
+    "selection_metric": "validation_accuracy",
+    "best_val_accuracy": float(best_val_accuracy),
+    "seed": SEED,
+    "batch_size": train_dl.batch_size,
+    "learning_rate": optimizer.param_groups[0]["lr"],
+    "min_frequency": MIN_FREQUENCY,
+    "epochs": EPOCHS
+}
+checkpoint = {
+    "model_state": best_model_state,
+    "model_args": model_args,
+    "vocab": vocab,
+    "label2id": label2id,
+    **training,
+    "training_sample_ids": train.sample_id.astype(str).tolist(),
+    "validation_sample_ids": val.sample_id.astype(str).tolist()
+}
+torch.save(checkpoint, OUTPUT_DIR / "best_model.pt")
+pd.DataFrame(history).to_csv(OUTPUT_DIR / "history.csv", index=False)
+
+metadata = {
+    "experiment": "RQ1 CNN response-only",
+    "script": "src/cnn/cnn_rq1.py",
+    "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    "device": str(next(model.parameters()).device),
+    "packages": {
+        "python": platform.python_version(),
+        **{package: version(package) for package in ("torch", "numpy", "pandas", "pyarrow")},
+        "scikit_learn": version("scikit-learn")
+    },
+    "model_args": model_args,
+    "training": training,
+    "split_counts": {name: len(frame) for name, frame in frames.items()},
+    "split_sha256": split_sha256
+}
+(OUTPUT_DIR / "run_metadata.json").write_text(
+    json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+)
  
  
 # 9. Final test evaluation
@@ -516,4 +611,36 @@ print(pd.DataFrame(
     columns=family_names
 
 ))
- 
+
+# 10. Save final test scores, the confusion matrix, and individual predictions.
+report = classification_report(
+    test_labels,
+    test_predictions,
+    labels=[0, 1, 2],
+    target_names=family_names,
+    output_dict=True,
+    zero_division=0
+)
+metrics = {
+    "accuracy": float(test_accuracy),
+    "macro_precision": report["macro avg"]["precision"],
+    "macro_recall": report["macro avg"]["recall"],
+    "macro_f1": float(test_macro_f1),
+    "n_examples": len(test),
+    "classification_report": report
+}
+(OUTPUT_DIR / "test_metrics.json").write_text(
+    json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
+)
+pd.DataFrame(
+    cm,
+    index=pd.Index(family_names, name="actual"),
+    columns=family_names
+).to_csv(OUTPUT_DIR / "test_confusion_matrix.csv")
+
+# test_dl uses shuffle=False, so predictions follow the original test-row order.
+predictions = test[["sample_id", "family"]].copy()
+predictions["predicted_family"] = [family_names[index] for index in test_predictions]
+predictions.to_csv(OUTPUT_DIR / "test_predictions.csv", index=False)
+
+print("\nSaved model and results to:", OUTPUT_DIR)

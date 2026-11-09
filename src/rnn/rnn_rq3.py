@@ -9,9 +9,12 @@
 # 4. Hold out Creative Writing domain
 
 
+import argparse
 import re
 import copy
 from collections import Counter
+from pathlib import Path
+from unicodedata import normalize
 
 import pandas as pd
 
@@ -33,9 +36,16 @@ torch.manual_seed(42)
 
 #### 1. load the data ####
 
-train = pd.read_parquet("data/splits/train.parquet")
-val = pd.read_parquet("data/splits/validation.parquet")
-test = pd.read_parquet("data/splits/test.parquet")
+parser = argparse.ArgumentParser(description="Run the four RQ3 LSTM domain holdouts.")
+parser.add_argument("--data-dir", type=Path,
+                    default=Path(__file__).resolve().parents[2] / "data" / "splits")
+parser.add_argument("--output-dir", type=Path, default=Path.cwd(),
+                    help="Directory for rq3_results.csv")
+args = parser.parse_args()
+
+train = pd.read_parquet(args.data_dir / "train.parquet")
+val = pd.read_parquet(args.data_dir / "validation.parquet")
+test = pd.read_parquet(args.data_dir / "test.parquet")
 
 label2id = {
     "GPT": 0,
@@ -48,7 +58,8 @@ label2id = {
 # split text into words, punctuation, and new lines
 
 def tokenize(text):
-    return re.findall(r"\w+|\n|[^\w\s]", str(text))
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    return re.findall(r"\w+|\n|[^\w\s]", text)
 
 
 #### 3. Build vocabulary from training data only ####
@@ -58,7 +69,7 @@ def build_vocab(texts):
     counts = Counter(
         token
         for text in texts
-        for token in tokenize(text)
+        for token in tokenize(text)[:MAX_LEN]
     )
 
     # special tokens for padding and unknown words
@@ -203,6 +214,10 @@ class TextLSTM(nn.Module):
 #### run one held-out-domain experiment ####
 
 
+def normalize_response(text):
+    return " ".join(normalize("NFKC", text).casefold().split())
+
+
 def run_experiment(train, val, test, held_out_domain):
 
     print("Held-out domain:", held_out_domain)
@@ -224,6 +239,19 @@ def run_experiment(train, val, test, held_out_domain):
     ].copy()
     
     seen_test_data = test[test["domain"] != held_out_domain].copy()
+
+    # Count distinct shared responses between source splits and the target test.
+    test_responses = set(test_data["response"].dropna())
+    normalized_test = {normalize_response(text) for text in test_responses}
+    overlap_counts = {}
+    for split, frame in (("train", train_data), ("validation", val_data)):
+        source_responses = set(frame["response"].dropna())
+        normalized_source = {normalize_response(text) for text in source_responses}
+        exact = len(source_responses & test_responses)
+        normalized = len(normalized_source & normalized_test)
+        overlap_counts[f"{split}_test_exact_response_overlap"] = exact
+        overlap_counts[f"{split}_test_normalized_response_overlap"] = normalized
+        print(f"{split} vs held-out test shared responses: {exact} exact, {normalized} normalized")
 
 
     ## build vocabulary from training data only ##
@@ -403,6 +431,7 @@ def run_experiment(train, val, test, held_out_domain):
 
     return {
         "held_out_domain": held_out_domain,
+        **overlap_counts,
         "seen_accuracy": seen_accuracy,
         "held_out_accuracy": held_out_accuracy,
         "accuracy_drop": accuracy_drop,
@@ -419,7 +448,8 @@ for domain in ["general", "code", "math", "creative_writing"]:
 
 # Save all experiment results to a CSV file
 results_df = pd.DataFrame(results)
-results_df.to_csv("rq3_results.csv", index=False)
+args.output_dir.mkdir(parents=True, exist_ok=True)
+results_df.to_csv(args.output_dir / "rq3_results.csv", index=False)
 
 print("\nRQ3 Summary:")
 print(results_df)

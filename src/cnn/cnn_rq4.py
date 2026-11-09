@@ -2,22 +2,22 @@
 
 Self-contained: imports only installed libraries, never other project Python files.
 Run from the repository root:
-    python src/cnn/rq4_cnn.py
+    python src/cnn/cnn_rq4.py --checkpoint PATH_TO_RQ1_BEST_MODEL.pt
 
-Optional: --data-dir PATH --output-dir NEW_PATH --epochs 10 --device cpu
-Edit the settings below to change embedding size, filters or input lengths.
-Uses the existing fixed splits and a training-only vocabulary.
-Model selection uses validation accuracy, matching the supplied LSTM example.
+Optional: --data-dir PATH --output-dir NEW_PATH --device cpu
+Keep the RQ1 run_metadata.json beside the checkpoint. Pass the same data
+directory used for RQ1 so the split fingerprints match.
 Architecture reference: https://aclanthology.org/D14-1181/
 """
 
 import argparse
+import hashlib
 import json
-import random
 import re
 import warnings
 from collections import Counter, defaultdict
 from datetime import datetime
+from io import BytesIO
 from itertools import combinations
 from pathlib import Path
 
@@ -28,31 +28,20 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, classification_report
 
 
-# 1. Settings — edit these values to change the experiment.
-# These match the basic setup of your LSTM example where applicable.
-MAX_LEN = 512                 # Response token budget in every experiment
-PROMPT_LEN = 128              # Additional prompt budget for RQ2
-EMB_DIM = 200
-NUM_FILTERS = 100             # Number of filters for EACH kernel size
-KERNEL_SIZES = (3, 4, 5)
-DROPOUT = 0.5
-BATCH_SIZE = 64
-EPOCHS = 10
-LEARNING_RATE = 0.001
-MIN_FREQUENCY = 2
-SEED = 42
-
 label2id = {"GPT": 0, "Claude": 1, "Gemini": 2}
 CLASS_NAMES = list(label2id)
 CLASS_IDS = list(label2id.values())
 
 
-# 2. Load the existing splits. Do not randomly split the dataset again.
-def load_data(data_dir):
+# Load the exact splits from the baseline run.
+def load_data(data_dir, split_sha256):
     frames = {}
     required = ["sample_id", "prompt_group_id", "family", "prompt", "response"]
     for split in ("train", "validation", "test"):
-        frame = pd.read_parquet(Path(data_dir) / f"{split}.parquet").reset_index(drop=True)
+        split_bytes = (data_dir / f"{split}.parquet").read_bytes()
+        if hashlib.sha256(split_bytes).hexdigest() != split_sha256.get(split):
+            raise ValueError(f"{split}: split SHA-256 does not match the RQ1 run metadata.")
+        frame = pd.read_parquet(BytesIO(split_bytes)).reset_index(drop=True)
         if set(required) - set(frame.columns):
             raise ValueError(f"{split}: missing required columns.")
         if frame.empty or frame[required].isna().any().any():
@@ -81,49 +70,24 @@ def load_data(data_dir):
     return frames["train"], frames["validation"], frames["test"]
 
 
-# 3. Tokenize and build the vocabulary from TRAINING text only.
-def tokenize(text):
-    # Preserve case, newlines, punctuation and Markdown symbols.
-    # Spaces and tabs are not separate tokens.
-    return re.findall(r"\w+|\n|[^\w\s]", text.replace("\r\n", "\n").replace("\r", "\n"))
+# Use the baseline's response tokenizer, input length, and saved vocabulary.
+def tokenize(text, max_len):
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    return re.findall(r"\w+|\n|[^\w\s]", text)[:max_len]
 
 
-def build_vocab(train, mode="response"):
-    counts = Counter(token for text in train.response for token in tokenize(text))
-    if mode == "prompt_response":
-        counts.update(token for text in train.prompt for token in tokenize(text))
-    vocab = {"<pad>": 0, "<unk>": 1, "<sep>": 2}
-    for token, count in counts.items():
-        if count >= MIN_FREQUENCY and token not in vocab:
-            vocab[token] = len(vocab)
-    return vocab
-
-
-# 4. Convert one example into token IDs and record its true length.
-def text_tokens(row, mode="response"):
-    response = tokenize(row["response"])[:MAX_LEN]
-    if mode == "response":
-        return response
-    if mode == "prompt_response":
-        # Adding the prompt never reduces the number of retained response tokens.
-        return tokenize(row["prompt"])[:PROMPT_LEN] + ["<sep>"] + response
-    raise ValueError(f"Unknown input mode: {mode}")
-
-
-def encode(row, vocab, mode="response"):
-    tokens = text_tokens(row, mode)
+def encode(text, vocab, max_len):
+    tokens = tokenize(text, max_len)
     ids = [vocab.get(token, 1) for token in tokens] or [1]
     length = len(ids)
-    width = MAX_LEN if mode == "response" else PROMPT_LEN + 1 + MAX_LEN
-    width = max(width, max(KERNEL_SIZES))
-    ids += [0] * (width - length)
+    ids += [0] * (max_len - length)
     return ids, length
 
 
 # 5. Dataset and batches.
 class TextDataset(Dataset):
-    def __init__(self, frame, vocab, mode="response"):
-        encoded = [encode(row, vocab, mode) for row in frame.to_dict("records")]
+    def __init__(self, frame, vocab, max_len):
+        encoded = [encode(text, vocab, max_len) for text in frame.response]
         self.x = torch.tensor([item[0] for item in encoded], dtype=torch.long)
         self.lengths = torch.tensor([item[1] for item in encoded], dtype=torch.long)
         self.y = torch.tensor([label2id[family] for family in frame.family], dtype=torch.long)
@@ -135,17 +99,13 @@ class TextDataset(Dataset):
         return self.x[index], self.lengths[index], self.y[index]
 
 
-def make_loader(frame, vocab, mode="response", shuffle=False):
-    if frame.empty:
-        raise ValueError("Cannot train or evaluate an empty subset.")
-    return DataLoader(TextDataset(frame, vocab, mode), batch_size=BATCH_SIZE,
-                      shuffle=shuffle, generator=torch.Generator().manual_seed(SEED))
+def make_loader(frame, vocab, max_len, batch_size):
+    return DataLoader(TextDataset(frame, vocab, max_len), batch_size=batch_size)
 
 
 # 6. CNN: embedding -> parallel convolutions -> max pooling -> dropout -> linear.
 class TextCNN(nn.Module):
-    def __init__(self, vocab_size, emb_dim=EMB_DIM, num_filters=NUM_FILTERS,
-                 kernel_sizes=KERNEL_SIZES, dropout=DROPOUT):
+    def __init__(self, vocab_size, emb_dim, num_filters, kernel_sizes, n_classes, dropout):
         super().__init__()
         self.kernel_sizes = tuple(kernel_sizes)
         self.embedding = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
@@ -153,7 +113,7 @@ class TextCNN(nn.Module):
             nn.Conv1d(emb_dim, num_filters, kernel_size=k) for k in self.kernel_sizes
         ])
         self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(num_filters * len(self.kernel_sizes), len(CLASS_NAMES))
+        self.fc = nn.Linear(num_filters * len(self.kernel_sizes), n_classes)
 
     def extract_features(self, x, lengths):
         # [batch, length, embedding] -> [batch, embedding, length]
@@ -197,124 +157,78 @@ def evaluate(model, loader, device):
     return scores, actual, predicted
 
 
-# 7. Train and copy the best weights using VALIDATION accuracy.
-# This uses the same selection metric as your pasted LSTM example.
-def train_cnn(train, val, mode, device, epochs):
-    random.seed(SEED)
-    torch.manual_seed(SEED)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(SEED)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    for name, frame in (("training", train), ("validation", val)):
-        if set(frame.family) != set(CLASS_NAMES):
-            raise ValueError(f"All three families must occur in the {name} subset.")
-    vocab = build_vocab(train, mode)
-    train_dl = make_loader(train, vocab, mode, shuffle=True)
-    val_dl = make_loader(val, vocab, mode)
-    model_args = dict(vocab_size=len(vocab), emb_dim=EMB_DIM, num_filters=NUM_FILTERS,
-                      kernel_sizes=list(KERNEL_SIZES), dropout=DROPOUT)
-    model = TextCNN(**model_args).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    loss_fn = nn.CrossEntropyLoss()
-    best_accuracy, best_state, best_epoch = -1.0, None, None
-    history = []
+def load_rq1_checkpoint(path):
+    metadata_path = path.with_name("run_metadata.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if (
+        metadata.get("script") != "src/cnn/cnn_rq1.py"
+        or not metadata.get("split_sha256")
+        or not metadata.get("training")
+    ):
+        raise ValueError(f"{metadata_path}: expected RQ1 CNN run metadata with split hashes.")
 
-    for epoch in range(1, epochs + 1):
-        model.train()         # Enable dropout during training.
-        total_loss = 0.0
-        for x, lengths, y in train_dl:
-            x, lengths, y = x.to(device), lengths.to(device), y.to(device)
-            optimizer.zero_grad()
-            loss = loss_fn(model(x, lengths), y)
-            if not torch.isfinite(loss):
-                raise RuntimeError("Training produced a non-finite loss.")
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            total_loss += loss.item() * y.size(0)
+    checkpoint_bytes = path.read_bytes()
+    checkpoint = torch.load(BytesIO(checkpoint_bytes), map_location="cpu", weights_only=True)
+    if (
+        checkpoint.get("mode") != "response"
+        or checkpoint.get("vocab_source") != "training_response_prefix"
+        or checkpoint.get("label2id") != label2id
+        or checkpoint.get("model_args") != metadata.get("model_args")
+        or any(checkpoint.get(key) != value for key, value in metadata["training"].items())
+    ):
+        raise ValueError(f"{path}: expected a response-only RQ1 CNN checkpoint matching its metadata.")
 
-        scores, _, _ = evaluate(model, val_dl, device)
-        history.append({"epoch": epoch, "train_loss": total_loss / len(train_dl.dataset),
-                        "val_accuracy": scores["accuracy"], "val_macro_f1": scores["macro_f1"]})
-        print(f"Epoch {epoch}/{epochs} | Loss {history[-1]['train_loss']:.4f} | "
-              f"Val accuracy {scores['accuracy']:.4f} | Val F1 {scores['macro_f1']:.4f}", flush=True)
-        if scores["accuracy"] > best_accuracy:
-            best_accuracy, best_epoch = scores["accuracy"], epoch
-            # state_dict() alone points to live weights. Clone each tensor so
-            # later epochs cannot change this saved best-model snapshot.
-            best_state = {name: value.detach().cpu().clone()
-                          for name, value in model.state_dict().items()}
-
-    model.load_state_dict(best_state)
-    model.eval()
-    checkpoint = {"model_state": best_state, "model_args": model_args, "vocab": vocab,
-                  "label2id": label2id, "mode": mode, "max_len": MAX_LEN,
-                  "prompt_len": PROMPT_LEN, "best_epoch": best_epoch,
-                  "selection_metric": "validation_accuracy", "best_val_accuracy": best_accuracy,
-                  "seed": SEED, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
-                  "min_frequency": MIN_FREQUENCY, "epochs": epochs,
-                  "training_sample_ids": train.sample_id.astype(str).tolist(),
-                  "validation_sample_ids": val.sample_id.astype(str).tolist()}
-    return model, vocab, checkpoint, history
+    model = TextCNN(**checkpoint["model_args"])
+    model.load_state_dict(checkpoint["model_state"])
+    return model, checkpoint, metadata, hashlib.sha256(checkpoint_bytes).hexdigest()
 
 
-# 8. Save the restored best model, test scores, and a labeled confusion matrix.
-def save_model(folder, checkpoint, history):
-    folder.mkdir(parents=True, exist_ok=False)
-    torch.save(checkpoint, folder / "best_model.pt")
-    pd.DataFrame(history).to_csv(folder / "history.csv", index=False)
-
-
-def test_and_save(model, frame, vocab, mode, device, folder, name="test"):
-    scores, actual, predicted = evaluate(model, make_loader(frame, vocab, mode), device)
+def test_and_save(model, frame, loader, device, folder):
+    scores, actual, predicted = evaluate(model, loader, device)
     matrix = confusion_matrix(actual, predicted, labels=CLASS_IDS)
     report = classification_report(actual, predicted, labels=CLASS_IDS,
                                    target_names=CLASS_NAMES, output_dict=True, zero_division=0)
-    (folder / f"{name}_metrics.json").write_text(
-        json.dumps({**scores, "n_examples": len(frame), "classification_report": report}, indent=2) + "\n")
+    metrics = {**scores, "macro_precision": report["macro avg"]["precision"],
+               "macro_recall": report["macro avg"]["recall"],
+               "n_examples": len(frame), "classification_report": report}
+    (folder / "test_metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
     pd.DataFrame(matrix, index=pd.Index(CLASS_NAMES, name="actual"),
-                 columns=CLASS_NAMES).to_csv(folder / f"{name}_confusion_matrix.csv")
+                 columns=CLASS_NAMES).to_csv(folder / "test_confusion_matrix.csv")
     predictions = frame[["sample_id", "family"]].copy()
     predictions["predicted_family"] = [CLASS_NAMES[index] for index in predicted]
-    predictions.to_csv(folder / f"{name}_predictions.csv", index=False)
-    print(f"{name}: accuracy={scores['accuracy']:.4f}, macro F1={scores['macro_f1']:.4f}", flush=True)
+    predictions.to_csv(folder / "test_predictions.csv", index=False)
+    print(f"test: accuracy={scores['accuracy']:.4f}, macro F1={scores['macro_f1']:.4f}", flush=True)
     print(pd.DataFrame(matrix, index=CLASS_NAMES, columns=CLASS_NAMES), flush=True)
     return scores
 
 
-# 9. Locate the project and choose an output folder for this run.
-def setup(question, argv=None, extra_arguments=None):
+# Locate the project and choose an output folder for this analysis.
+def setup(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    candidates = [Path.cwd(), *Path(__file__).resolve().parents]
-    root = next((p for p in candidates if (p / "data/splits/train.parquet").exists()), Path.cwd())
+    root = Path(__file__).resolve().parents[2]
+    parser.add_argument("--checkpoint", type=Path, required=True,
+                        help="RQ1 CNN best_model.pt with run_metadata.json beside it")
     parser.add_argument("--data-dir", type=Path, default=root / "data/splits")
     parser.add_argument("--output-dir", type=Path, help="A NEW directory for this run")
-    parser.add_argument("--epochs", type=int, default=EPOCHS)
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
-    if extra_arguments:
-        extra_arguments(parser)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="cpu")
+    parser.add_argument("--top-patterns", type=int, default=20)
+    parser.add_argument("--min-pattern-examples", type=int, default=2)
     args = parser.parse_args(argv)
-    if args.epochs < 1 or min(MAX_LEN, PROMPT_LEN, BATCH_SIZE, EMB_DIM, NUM_FILTERS, MIN_FREQUENCY) < 1:
-        parser.error("Epochs, lengths, batch size, dimensions and frequency must be positive.")
-    if not KERNEL_SIZES or min(KERNEL_SIZES) < 1 or not 0 <= DROPOUT < 1 or LEARNING_RATE <= 0:
-        parser.error("Invalid kernel size, dropout, or learning rate.")
+    if args.top_patterns < 1 or args.min_pattern_examples < 1:
+        parser.error("Pattern limits must be positive.")
     device = args.device
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     torch.set_num_threads(4)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    output = args.output_dir or root / "results/cnn" / question / timestamp
-    # Preserve previous runs instead of overwriting them.
-    output.mkdir(parents=True, exist_ok=False)
-    print(f"Device: {device}\nResults: {output}", flush=True)
+    output = args.output_dir or root / "results/cnn/rq4" / timestamp
     return args, torch.device(device), output
 
 
 # 10. RQ4: measure writing style and inspect patterns supporting CNN predictions.
 def writing_style_summary(train):
     # Descriptive statistics use FULL training responses. The CNN itself sees
-    # only the first MAX_LEN tokens, so these are not direct feature importances.
+    # only the checkpoint's input window.
     rows = []
     for row in train.to_dict("records"):
         text = row["response"]
@@ -334,14 +248,13 @@ def writing_style_summary(train):
     return summary
 
 
-def cnn_supporting_patterns(model, val, vocab, device, top_n=20, min_examples=2):
+def cnn_supporting_patterns(model, val, loader, vocab, max_len, device, top_n=20, min_examples=2):
     # Interpret VALIDATION examples, not the final test examples.
     # In eval mode the head is linear: class_logit = bias + sum(weight * pooled_activation).
     # Subtract the average other-class weight to explain a class-vs-other-classes
     # logit margin. The bias is constant and is not attributed to a text pattern.
     model.eval()
-    loader = make_loader(val, vocab)
-    original_tokens = [text_tokens(row) for row in val.to_dict("records")]
+    original_tokens = [tokenize(text, max_len) for text in val.response]
     totals = defaultdict(lambda: {"total_margin_contribution": 0.0, "example_count": 0})
     analyzed = Counter()
     offset = 0
@@ -391,25 +304,32 @@ def cnn_supporting_patterns(model, val, vocab, device, top_n=20, min_examples=2)
 
 
 def main(argv=None):
-    def extra(parser):
-        parser.add_argument("--top-patterns", type=int, default=20)
-        parser.add_argument("--min-pattern-examples", type=int, default=2)
-    args, device, output = setup("rq4", argv, extra)
-    if args.top_patterns < 1 or args.min_pattern_examples < 1:
-        raise ValueError("Pattern limits must be positive.")
-    train, val, test = load_data(args.data_dir)
-    model, vocab, checkpoint, history = train_cnn(train, val, "response", device, args.epochs)
+    args, device, output = setup(argv)
+    model, checkpoint, metadata, checkpoint_sha256 = load_rq1_checkpoint(args.checkpoint)
+    train, val, test = load_data(args.data_dir, metadata["split_sha256"])
+    model.to(device)
+    vocab = checkpoint["vocab"]
+    max_len, batch_size = checkpoint["max_len"], checkpoint["batch_size"]
+
     folder = output / "response"
-    save_model(folder, checkpoint, history)
+    output.mkdir(parents=True, exist_ok=False)
+    folder.mkdir()
+    print(f"RQ1 checkpoint: {args.checkpoint}\nDevice: {device}\nResults: {output}", flush=True)
 
     style = writing_style_summary(train)
     style.to_csv(output / "rq4_training_style_by_family.csv")
-    patterns, analyzed = cnn_supporting_patterns(model, val, vocab, device,
-                                                args.top_patterns, args.min_pattern_examples)
+    val_loader = make_loader(val, vocab, max_len, batch_size)
+    patterns, analyzed = cnn_supporting_patterns(
+        model, val, val_loader, vocab, max_len, device, args.top_patterns, args.min_pattern_examples
+    )
     patterns.to_csv(output / "rq4_validation_supporting_patterns.csv", index=False)
     (output / "rq4_interpretation_notes.json").write_text(json.dumps({
+        "baseline_checkpoint": str(args.checkpoint),
+        "baseline_checkpoint_sha256": checkpoint_sha256,
+        "baseline_best_epoch": checkpoint["best_epoch"],
+        "split_sha256": metadata["split_sha256"],
         "style_data": "Full training responses; descriptive means, not CNN feature importance.",
-        "pattern_data": "Correctly classified validation responses, truncated to MAX_LEN.",
+        "pattern_data": f"Correctly classified validation responses, truncated to {max_len} tokens.",
         "correct_validation_examples_analyzed": analyzed,
         "pattern_score": "Positive pooled-feature contributions to true-class logit minus mean other-class logits; bias excluded.",
         "ranking": "Total positive contribution, restricted to patterns meeting minimum example count.",
@@ -418,7 +338,7 @@ def main(argv=None):
     }, indent=2) + "\n")
 
     # Test performance is reported once; test examples never select the patterns.
-    test_and_save(model, test, vocab, "response", device, folder)
+    test_and_save(model, test, make_loader(test, vocab, max_len, batch_size), device, folder)
     print("\n===== RQ4: MEAN WRITING-STYLE STATISTICS =====\n", style.round(3).to_string())
     print("\n===== RQ4: CNN-SUPPORTING VALIDATION PATTERNS =====\n", patterns.to_string(index=False))
     if patterns.empty:
