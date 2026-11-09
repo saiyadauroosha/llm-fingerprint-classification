@@ -1,0 +1,244 @@
+{
+  "source_sha256": {
+    "train": "47e8ac72b5121b69bb684c704af5c4ca1dbf21ea09bf7e76776609f87b60eaef",
+    "validation": "eab64e2e6b4161eb6eaf92ecb0f053f6c2bf1eaa6d3460eb1005aaf2c3cc223b",
+    "test": "7230d1d3548d8e8620031c783ff9f20f59a95aeb8ddd1a79fc937519ec32f6be"
+  },
+  "split_sha256": {
+    "train": "fff249b5632e0814b562406c51ffd10ad9d3ac82915f7b01cf1e3c20436bba4b",
+    "validation": "854a53244d96c2398f6ff639938afec5f890fa55f36991de1468a507b2ed8b40",
+    "test": "436f58290fd18a1c6fc2b74c0bf43aa270b85e48e4c7858893951e69d4e81a33"
+  },
+  "original_counts": {
+    "train": 4188,
+    "validation": 916,
+    "test": 896
+  },
+  "retained_counts": {
+    "train": 4182,
+    "validation": 900,
+    "test": 888
+  },
+  "excluded_rows": [
+    {
+      "split": "train",
+      "sample_id": 155,
+      "reasons": [
+        "reviewed_identity_disclosure"
+      ]
+    },
+    {
+      "split": "train",
+      "sample_id": 1130,
+      "reasons": [
+        "reviewed_identity_disclosure"
+      ]
+    },
+    {
+      "split": "train",
+      "sample_id": 1949,
+      "reasons": [
+        "reviewed_identity_disclosure"
+      ]
+    },
+    {
+      "split": "train",
+      "sample_id": 2035,
+      "reasons": [
+        "reviewed_identity_disclosure"
+      ]
+    },
+    {
+      "split": "train",
+      "sample_id": 2753,
+      "reasons": [
+        "reviewed_identity_disclosure"
+      ]
+    },
+    {
+      "split": "train",
+      "sample_id": 5488,
+      "reasons": [
+        "reviewed_identity_disclosure"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 37,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 462,
+      "reasons": [
+        "normalized_response_in_earlier_split",
+        "response_token_prefix_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 564,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 1193,
+      "reasons": [
+        "normalized_prompt_in_earlier_split",
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 1497,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 1892,
+      "reasons": [
+        "normalized_response_in_earlier_split",
+        "response_token_prefix_in_earlier_split",
+        "normalized_prompt_in_earlier_split",
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 2026,
+      "reasons": [
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 2720,
+      "reasons": [
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 2999,
+      "reasons": [
+        "normalized_response_in_earlier_split",
+        "response_token_prefix_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 3542,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 3608,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 4507,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 4864,
+      "reasons": [
+        "normalized_prompt_in_earlier_split",
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 5586,
+      "reasons": [
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 5840,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "validation",
+      "sample_id": 5908,
+      "reasons": [
+        "normalized_prompt_in_earlier_split",
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 394,
+      "reasons": [
+        "normalized_prompt_in_earlier_split",
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 1138,
+      "reasons": [
+        "normalized_response_in_earlier_split",
+        "response_token_prefix_in_earlier_split"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 1853,
+      "reasons": [
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 1979,
+      "reasons": [
+        "reviewed_identity_disclosure"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 1992,
+      "reasons": [
+        "normalized_response_in_earlier_split"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 3561,
+      "reasons": [
+        "normalized_response_in_earlier_split"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 3997,
+      "reasons": [
+        "reviewed_similar_prompt_in_earlier_split"
+      ]
+    },
+    {
+      "split": "test",
+      "sample_id": 4355,
+      "reasons": [
+        "normalized_prompt_in_earlier_split"
+      ]
+    }
+  ]
+}
